@@ -270,6 +270,18 @@ class GitSourceCompareDialog(QDialog):
         
         layout.addLayout(info_layout)
         
+        # Filter info label
+        filter_info = []
+        if self.without_paths:
+            filter_info.append(f"Without: {', '.join(self.without_paths[:3])}" + ("..." if len(self.without_paths) > 3 else ""))
+        if self.except_paths:
+            filter_info.append(f"Except: {len(self.except_paths)} path(s)")
+        if filter_info:
+            filter_label = QLabel("🔍 Filters: " + " | ".join(filter_info))
+            filter_label.setStyleSheet("font-size: 11px; color: #888888; padding: 5px;")
+            filter_label.setToolTip(f"Without paths: {', '.join(self.without_paths)}\nExcept paths: {', '.join(self.except_paths)}")
+            layout.addWidget(filter_label)
+        
         # File list table
         self.file_list = QTableWidget()
         self.file_list.setColumnCount(3)
@@ -397,14 +409,91 @@ class GitSourceCompareDialog(QDialog):
         git_file = os.path.join(self.git_path, git_rel.replace("/", os.sep))
         return git_rel, git_file
     
+    def _check_path_access(self, path, path_name="Path"):
+        """Check if a path is accessible, with retry logic for network shares"""
+        import time
+        
+        # Check if it's a network share
+        is_network = path.startswith('\\\\') or path.startswith('//')
+        
+        if is_network:
+            self.status_label.setText(f"Checking network access: {path_name}...")
+            QApplication.processEvents()  # Update UI
+        
+        # Try multiple times for network shares (they can be slow to respond)
+        max_retries = 3 if is_network else 1
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                if os.path.exists(path):
+                    return True, None
+                else:
+                    if attempt < max_retries - 1:
+                        if is_network:
+                            self.status_label.setText(f"Retrying network access ({attempt + 1}/{max_retries})...")
+                            QApplication.processEvents()
+                            time.sleep(retry_delay)
+                            continue
+            except (OSError, PermissionError, TimeoutError) as e:
+                error_msg = str(e)
+                if attempt < max_retries - 1:
+                    if is_network:
+                        self.status_label.setText(f"Network error, retrying ({attempt + 1}/{max_retries})...")
+                        QApplication.processEvents()
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        return False, error_msg
+                else:
+                    return False, error_msg
+            except Exception as e:
+                return False, f"Unexpected error: {str(e)}"
+        
+        # Path doesn't exist after retries
+        if is_network:
+            return False, f"Network path not accessible or timed out after {max_retries} attempts"
+        else:
+            return False, "Path does not exist"
+    
     def scan_changes(self):
-        """Scan for differences between Git and Source paths"""
-        if not os.path.exists(self.git_path):
-            QMessageBox.warning(self, "Error", f"Git path does not exist: {self.git_path}")
+        """Scan for differences between Git and Source paths
+        
+        This method compares all files between Git and Source paths while:
+        - Excluding files/folders in except_paths
+        - Handling without_paths for flattened directory structures (files in without_paths 
+          subdirectories in Source are stored at root level in Git)
+        - Comparing file content using MD5 hashes
+        - Handling network share connectivity issues with retry logic
+        """
+        # Check Git path access with retry logic
+        git_accessible, git_error = self._check_path_access(self.git_path, "Git path")
+        if not git_accessible:
+            error_msg = f"Git path is not accessible:\n{self.git_path}\n\n"
+            if git_error:
+                error_msg += f"Error: {git_error}\n\n"
+            error_msg += "Possible issues:\n"
+            error_msg += "- Network share is offline or unreachable\n"
+            error_msg += "- Invalid credentials or permissions\n"
+            error_msg += "- Network timeout\n"
+            error_msg += "- Path format incorrect"
+            QMessageBox.warning(self, "Git Path Error", error_msg)
+            self.status_label.setText(f"❌ Git path not accessible: {git_error or 'Path not found'}")
             return
         
-        if not os.path.exists(self.source_path):
-            QMessageBox.warning(self, "Error", f"Source path does not exist: {self.source_path}")
+        # Check Source path access with retry logic
+        source_accessible, source_error = self._check_path_access(self.source_path, "Source path")
+        if not source_accessible:
+            error_msg = f"Source path is not accessible:\n{self.source_path}\n\n"
+            if source_error:
+                error_msg += f"Error: {source_error}\n\n"
+            error_msg += "Possible issues:\n"
+            error_msg += "- Network share is offline or unreachable\n"
+            error_msg += "- Invalid credentials or permissions\n"
+            error_msg += "- Network timeout\n"
+            error_msg += "- Path format incorrect"
+            QMessageBox.warning(self, "Source Path Error", error_msg)
+            self.status_label.setText(f"❌ Source path not accessible: {source_error or 'Path not found'}")
             return
         
         self.status_label.setText("Scanning...")
@@ -413,62 +502,116 @@ class GitSourceCompareDialog(QDialog):
         
         # Compare files (Git -> Source)
         # Walk git path and find corresponding files in source
-        for root, dirs, files in os.walk(self.git_path):
-            rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
-            if rel_dir == ".":
-                rel_dir = ""
-            dirs[:] = [
-                d for d in dirs
-                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-            ]
-            for file in files:
-                git_file = os.path.join(root, file)
-                git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
+        # Respects except_paths (excludes matching files/dirs) and without_paths (handles flattened structure)
+        try:
+            for root, dirs, files in os.walk(self.git_path):
+                try:
+                    rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
+                    if rel_dir == ".":
+                        rel_dir = ""
+                    dirs[:] = [
+                        d for d in dirs
+                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                    ]
+                    for file in files:
+                        try:
+                            git_file = os.path.join(root, file)
+                            git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
 
-                if self._is_excluded(git_rel_path):
+                            if self._is_excluded(git_rel_path):
+                                continue
+
+                            display_rel_path, source_file = self._resolve_source_path_from_git(git_rel_path)
+                            
+                            status = ""
+                            try:
+                                if not os.path.exists(source_file):
+                                    status = "New in Git"
+                                else:
+                                    # Compare file contents
+                                    try:
+                                        with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
+                                            git_hash = hashlib.md5(f1.read()).hexdigest()
+                                            source_hash = hashlib.md5(f2.read()).hexdigest()
+                                            if git_hash != source_hash:
+                                                status = "Modified"
+                                    except (OSError, PermissionError, TimeoutError) as e:
+                                        status = f"Error reading: {str(e)[:50]}"
+                                    except Exception as e:
+                                        status = f"Error: {str(e)[:50]}"
+                            except Exception as e:
+                                status = f"Path error: {str(e)[:50]}"
+                            
+                            if status:
+                                self.add_change_to_list(display_rel_path, status, git_file, source_file, git_rel_path)
+                        except (OSError, PermissionError, TimeoutError) as e:
+                            # Network error accessing file, skip and continue
+                            self.status_label.setText(f"⚠️ Network issue accessing file: {file[:30]}...")
+                            QApplication.processEvents()
+                            continue
+                except (OSError, PermissionError, TimeoutError) as e:
+                    # Network error accessing directory, skip and continue
+                    self.status_label.setText(f"⚠️ Network issue accessing directory: {rel_dir[:30]}...")
+                    QApplication.processEvents()
                     continue
-
-                display_rel_path, source_file = self._resolve_source_path_from_git(git_rel_path)
-                
-                status = ""
-                if not os.path.exists(source_file):
-                    status = "New in Git"
-                else:
-                    # Compare file contents
-                    try:
-                        with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
-                            git_hash = hashlib.md5(f1.read()).hexdigest()
-                            source_hash = hashlib.md5(f2.read()).hexdigest()
-                            if git_hash != source_hash:
-                                status = "Modified"
-                    except Exception as e:
-                        status = f"Error: {e}"
-                
-                if status:
-                    self.add_change_to_list(display_rel_path, status, git_file, source_file, git_rel_path)
+        except (OSError, PermissionError, TimeoutError) as e:
+            error_msg = f"Network error while scanning Git path:\n{self.git_path}\n\nError: {str(e)}\n\n"
+            error_msg += "The network share may have become unresponsive during scanning."
+            QMessageBox.warning(self, "Network Error - Git Path", error_msg)
+            self.status_label.setText(f"❌ Network error: {str(e)[:50]}")
+            return
         
         # Check for files in source but not in git (respecting exclusion rules)
-        for root, dirs, files in os.walk(self.source_path):
-            rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
-            if rel_dir == ".":
-                rel_dir = ""
-            dirs[:] = [
-                d for d in dirs
-                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-            ]
-            for file in files:
-                source_file = os.path.join(root, file)
-                rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
+        try:
+            for root, dirs, files in os.walk(self.source_path):
+                try:
+                    rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
+                    if rel_dir == ".":
+                        rel_dir = ""
+                    dirs[:] = [
+                        d for d in dirs
+                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                    ]
+                    for file in files:
+                        try:
+                            source_file = os.path.join(root, file)
+                            rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
 
-                if self._is_excluded(rel_path):
+                            if self._is_excluded(rel_path):
+                                continue
+                            
+                            git_rel_path, git_file = self._resolve_git_path_from_source(rel_path)
+                            
+                            try:
+                                if not os.path.exists(git_file):
+                                    self.add_change_to_list(rel_path, "Only in Source", git_file, source_file, git_rel_path)
+                            except (OSError, PermissionError, TimeoutError) as e:
+                                # Network error checking file, skip and continue
+                                continue
+                        except (OSError, PermissionError, TimeoutError) as e:
+                            # Network error accessing file, skip and continue
+                            continue
+                except (OSError, PermissionError, TimeoutError) as e:
+                    # Network error accessing directory, skip and continue
                     continue
-                
-                git_rel_path, git_file = self._resolve_git_path_from_source(rel_path)
-                
-                if not os.path.exists(git_file):
-                    self.add_change_to_list(rel_path, "Only in Source", git_file, source_file, git_rel_path)
+        except (OSError, PermissionError, TimeoutError) as e:
+            error_msg = f"Network error while scanning Source path:\n{self.source_path}\n\nError: {str(e)}\n\n"
+            error_msg += "The network share may have become unresponsive during scanning."
+            QMessageBox.warning(self, "Network Error - Source Path", error_msg)
+            self.status_label.setText(f"❌ Network error: {str(e)[:50]}")
+            return
         
-        self.status_label.setText(f"Found {len(self.changes)} differences")
+        excluded_count = 0
+        filter_info = []
+        if self.except_paths:
+            filter_info.append(f"{len(self.except_paths)} except path(s)")
+        if self.without_paths:
+            filter_info.append(f"{len(self.without_paths)} without path(s)")
+        
+        status_text = f"Found {len(self.changes)} difference(s)"
+        if filter_info:
+            status_text += f" (Filters active: {', '.join(filter_info)})"
+        self.status_label.setText(status_text)
         self.copy_to_source_btn.setEnabled(len(self.changes) > 0)
     
     def add_change_to_list(self, rel_path, status, git_file, source_file, git_rel_path):
