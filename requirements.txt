@@ -1,0 +1,14 @@
+# Compare Observer Application Requirements
+
+# GUI Framework
+PyQt6>=6.6.0
+
+# File System Monitoring  
+watchdog>=4.0.0
+
+# HTTP Requests for Telegram
+requests>=2.31.0
+
+# For building executable
+pyinstaller>=6.10.0
+
