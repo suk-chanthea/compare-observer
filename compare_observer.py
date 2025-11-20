@@ -301,6 +301,30 @@ class GitSourceCompareDialog(QDialog):
 
     def _normalize_path(self, path):
         return path.replace("\\", "/").strip("/")
+    
+    def _safe_relpath(self, path, start):
+        """Safely compute relative path, handling cross-mount scenarios"""
+        try:
+            return os.path.relpath(path, start)
+        except ValueError:
+            # Paths are on different mounts - compute relative path manually
+            # Normalize both paths
+            path_norm = os.path.normpath(path)
+            start_norm = os.path.normpath(start)
+            
+            # If they're absolute paths, try to find common prefix
+            if os.path.isabs(path_norm) and os.path.isabs(start_norm):
+                # Get drive/root info
+                path_drive = os.path.splitdrive(path_norm)[0]
+                start_drive = os.path.splitdrive(start_norm)[0]
+                
+                # If different drives/mounts, can't compute relative path
+                if path_drive != start_drive and path_drive and start_drive:
+                    # Return just the filename as fallback
+                    return os.path.basename(path_norm)
+            
+            # Fallback: just return the basename
+            return os.path.basename(path_norm)
 
     def _join_rel_paths(self, base, child):
         base_normalized = self._normalize_path(base)
@@ -388,8 +412,9 @@ class GitSourceCompareDialog(QDialog):
         self.changes.clear()
         
         # Compare files (Git -> Source)
-        for root, dirs, files in os.walk(self.source_path):
-            rel_dir = self._normalize_path(os.path.relpath(root, self.source_path))
+        # Walk git path and find corresponding files in source
+        for root, dirs, files in os.walk(self.git_path):
+            rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
             if rel_dir == ".":
                 rel_dir = ""
             dirs[:] = [
@@ -398,7 +423,7 @@ class GitSourceCompareDialog(QDialog):
             ]
             for file in files:
                 git_file = os.path.join(root, file)
-                git_rel_path = self._normalize_path(os.path.relpath(git_file, self.git_path))
+                git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
 
                 if self._is_excluded(git_rel_path):
                     continue
@@ -424,7 +449,7 @@ class GitSourceCompareDialog(QDialog):
         
         # Check for files in source but not in git (respecting exclusion rules)
         for root, dirs, files in os.walk(self.source_path):
-            rel_dir = self._normalize_path(os.path.relpath(root, self.source_path))
+            rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
             if rel_dir == ".":
                 rel_dir = ""
             dirs[:] = [
@@ -433,7 +458,7 @@ class GitSourceCompareDialog(QDialog):
             ]
             for file in files:
                 source_file = os.path.join(root, file)
-                rel_path = self._normalize_path(os.path.relpath(source_file, self.source_path))
+                rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
 
                 if self._is_excluded(rel_path):
                     continue
