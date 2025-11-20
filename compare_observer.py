@@ -313,6 +313,16 @@ class GitSourceCompareDialog(QDialog):
 
     def _is_excluded(self, rel_path):
         normalized = self._normalize_path(rel_path)
+        
+        # Auto-exclude .git and common system files
+        if normalized.startswith('.git/') or normalized == '.git':
+            return True
+        if normalized.startswith('__pycache__/') or normalized == '__pycache__':
+            return True
+        if '.DS_Store' in normalized or 'Thumbs.db' in normalized:
+            return True
+        
+        # Check user-defined exceptions
         for pattern in self.except_paths:
             if normalized == pattern or normalized.startswith(f"{pattern}/"):
                 return True
@@ -378,8 +388,8 @@ class GitSourceCompareDialog(QDialog):
         self.changes.clear()
         
         # Compare files (Git -> Source)
-        for root, dirs, files in os.walk(self.git_path):
-            rel_dir = self._normalize_path(os.path.relpath(root, self.git_path))
+        for root, dirs, files in os.walk(self.source_path):
+            rel_dir = self._normalize_path(os.path.relpath(root, self.source_path))
             if rel_dir == ".":
                 rel_dir = ""
             dirs[:] = [

@@ -1,4 +1,4 @@
-"""Git to source comparison dialog"""
+"""Git to source comparison dialog - UPDATED WITH FIXES"""
 import os
 import hashlib
 import shutil
@@ -17,11 +17,93 @@ class ScanThread(QThread):
     progress = pyqtSignal(int, str)  # progress percentage, status message
     finished_scan = pyqtSignal(list)  # list of changes
     
-    def __init__(self, git_path, source_path):
+    def __init__(self, git_path, source_path, without_paths, except_paths):
         super().__init__()
         self.git_path = git_path
         self.source_path = source_path
+        self.without_paths = [self._normalize_path(p) for p in (without_paths or []) if p]
+        self.except_paths = [self._normalize_path(p) for p in (except_paths or []) if p]
         self._running = True
+        
+        # Auto-add common exclusions
+        common_auto_exclude = ['.git', '__pycache__', '.DS_Store', 'Thumbs.db']
+        for exc in common_auto_exclude:
+            if exc not in self.except_paths:
+                self.except_paths.append(exc)
+    
+    def _normalize_path(self, path):
+        return path.replace("\\", "/").strip("/")
+    
+    def _join_rel_paths(self, base, child):
+        base_normalized = self._normalize_path(base)
+        child_normalized = self._normalize_path(child)
+        if not base_normalized:
+            return child_normalized
+        if not child_normalized:
+            return base_normalized
+        return f"{base_normalized}/{child_normalized}"
+    
+    def _is_excluded(self, rel_path):
+        normalized = self._normalize_path(rel_path)
+        
+        # Auto-exclude .git and common system files
+        if normalized.startswith('.git/') or normalized == '.git':
+            return True
+        if normalized.startswith('__pycache__/') or normalized == '__pycache__':
+            return True
+        if '.DS_Store' in normalized or 'Thumbs.db' in normalized:
+            return True
+        
+        # Check user-defined exceptions
+        for pattern in self.except_paths:
+            if normalized == pattern or normalized.startswith(f"{pattern}/"):
+                return True
+        return False
+    
+    def _matches_without_dir(self, rel_path):
+        normalized = self._normalize_path(rel_path)
+        for directory in self.without_paths:
+            if normalized.startswith(directory):
+                return directory
+        return None
+    
+    def _resolve_source_path_from_git(self, git_rel_path):
+        """Map a file from Git (which may be flattened) to the expected source path."""
+        normalized = self._normalize_path(git_rel_path)
+        display_rel = normalized
+        source_file = os.path.join(self.source_path, normalized.replace("/", os.sep))
+
+        # If file exists directly, use it
+        if os.path.exists(source_file):
+            return display_rel, source_file
+
+        basename = os.path.basename(normalized)
+        # Try to map flattened files using 'without' directories
+        for directory in self.without_paths:
+            candidate_rel = self._normalize_path(os.path.join(directory, basename))
+            candidate_file = os.path.join(self.source_path, candidate_rel.replace("/", os.sep))
+            if os.path.exists(candidate_file):
+                return candidate_rel, candidate_file
+
+        # If still not found but without paths exist, default to first directory for new files
+        if self.without_paths:
+            candidate_rel = self._normalize_path(os.path.join(self.without_paths[0], basename))
+            candidate_file = os.path.join(self.source_path, candidate_rel.replace("/", os.sep))
+            return candidate_rel, candidate_file
+
+        return display_rel, source_file
+    
+    def _resolve_git_path_from_source(self, source_rel_path):
+        """Determine where a source file should live inside the Git directory."""
+        normalized = self._normalize_path(source_rel_path)
+        matched_dir = self._matches_without_dir(normalized)
+        if matched_dir:
+            basename = os.path.basename(normalized)
+            git_rel = basename  # Flattened path
+        else:
+            git_rel = normalized
+        git_file = os.path.join(self.git_path, git_rel.replace("/", os.sep))
+        return git_rel, git_file
     
     def run(self):
         changes = []
@@ -29,8 +111,24 @@ class ScanThread(QThread):
         # Count total files first
         total_files = 0
         for root, dirs, files in os.walk(self.git_path):
+            rel_dir = self._normalize_path(os.path.relpath(root, self.git_path))
+            if rel_dir == ".":
+                rel_dir = ""
+            # Filter directories
+            dirs[:] = [
+                d for d in dirs
+                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+            ]
             total_files += len(files)
+            
         for root, dirs, files in os.walk(self.source_path):
+            rel_dir = self._normalize_path(os.path.relpath(root, self.source_path))
+            if rel_dir == ".":
+                rel_dir = ""
+            dirs[:] = [
+                d for d in dirs
+                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+            ]
             total_files += len(files)
         
         if total_files == 0:
@@ -43,14 +141,30 @@ class ScanThread(QThread):
         for root, dirs, files in os.walk(self.git_path):
             if not self._running:
                 break
+            
+            rel_dir = self._normalize_path(os.path.relpath(root, self.git_path))
+            if rel_dir == ".":
+                rel_dir = ""
+            
+            # IMPORTANT: Filter out excluded directories BEFORE walking into them
+            dirs[:] = [
+                d for d in dirs
+                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+            ]
                 
             for file in files:
                 if not self._running:
                     break
                     
                 git_file = os.path.join(root, file)
-                rel_path = os.path.relpath(git_file, self.git_path)
-                source_file = os.path.join(self.source_path, rel_path)
+                git_rel_path = self._normalize_path(os.path.relpath(git_file, self.git_path))
+                
+                # Skip if file is excluded
+                if self._is_excluded(git_rel_path):
+                    processed += 1
+                    continue
+                
+                display_rel_path, source_file = self._resolve_source_path_from_git(git_rel_path)
                 
                 status = ""
                 if not os.path.exists(source_file):
@@ -68,40 +182,60 @@ class ScanThread(QThread):
                 
                 if status:
                     changes.append({
-                        'rel_path': rel_path,
+                        'rel_path': display_rel_path,
                         'status': status,
                         'git_file': git_file,
-                        'source_file': source_file
+                        'source_file': source_file,
+                        'git_rel_path': git_rel_path
                     })
                 
                 processed += 1
-                progress = int((processed / total_files) * 100)
-                self.progress.emit(progress, f"Scanning: {rel_path}")
+                if total_files > 0:
+                    progress = int((processed / total_files) * 100)
+                    self.progress.emit(progress, f"Scanning: {git_rel_path}")
         
         # Check for files in source but not in git
         for root, dirs, files in os.walk(self.source_path):
             if not self._running:
                 break
+            
+            rel_dir = self._normalize_path(os.path.relpath(root, self.source_path))
+            if rel_dir == ".":
+                rel_dir = ""
+            
+            # Filter directories
+            dirs[:] = [
+                d for d in dirs
+                if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+            ]
                 
             for file in files:
                 if not self._running:
                     break
                     
                 source_file = os.path.join(root, file)
-                rel_path = os.path.relpath(source_file, self.source_path)
-                git_file = os.path.join(self.git_path, rel_path)
+                rel_path = self._normalize_path(os.path.relpath(source_file, self.source_path))
+                
+                # Skip if excluded
+                if self._is_excluded(rel_path):
+                    processed += 1
+                    continue
+                
+                git_rel_path, git_file = self._resolve_git_path_from_source(rel_path)
                 
                 if not os.path.exists(git_file):
                     changes.append({
                         'rel_path': rel_path,
                         'status': "Only in Source",
                         'git_file': git_file,
-                        'source_file': source_file
+                        'source_file': source_file,
+                        'git_rel_path': git_rel_path
                     })
                 
                 processed += 1
-                progress = int((processed / total_files) * 100)
-                self.progress.emit(progress, f"Scanning: {rel_path}")
+                if total_files > 0:
+                    progress = int((processed / total_files) * 100)
+                    self.progress.emit(progress, f"Scanning: {rel_path}")
         
         self.finished_scan.emit(changes)
     
@@ -111,7 +245,7 @@ class ScanThread(QThread):
 
 class GitSourceCompareDialog(QDialog):
     """Dialog to compare files between Git path and Source path"""
-    def __init__(self, git_path, source_path, parent=None):
+    def __init__(self, git_path, source_path, backup_path="", without_paths=None, except_paths=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Git to Source Comparison")
         self.setMinimumWidth(1000)
@@ -124,6 +258,9 @@ class GitSourceCompareDialog(QDialog):
         self.setSizeGripEnabled(True)
         self.git_path = git_path
         self.source_path = source_path
+        self.backup_path = backup_path
+        self.without_paths = without_paths or []
+        self.except_paths = except_paths or []
         self.scan_thread = None
         
         layout = QVBoxLayout(self)
@@ -146,6 +283,11 @@ class GitSourceCompareDialog(QDialog):
         info_layout.addWidget(self.scan_btn)
         
         layout.addLayout(info_layout)
+        
+        # Exclusion info
+        exclusion_info = QLabel(f"ℹ️ Auto-excluding: .git, __pycache__, .DS_Store, Thumbs.db")
+        exclusion_info.setStyleSheet(STYLES['label_info'])
+        layout.addWidget(exclusion_info)
         
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -229,6 +371,7 @@ class GitSourceCompareDialog(QDialog):
         # Clear previous results
         self.file_list.setRowCount(0)
         self.changes.clear()
+        self.checkboxes.clear()
         
         # Show progress bar
         self.progress_bar.setVisible(True)
@@ -237,8 +380,8 @@ class GitSourceCompareDialog(QDialog):
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("⏳ Scanning...")
         
-        # Start scan thread
-        self.scan_thread = ScanThread(self.git_path, self.source_path)
+        # Start scan thread with exclusion paths
+        self.scan_thread = ScanThread(self.git_path, self.source_path, self.without_paths, self.except_paths)
         self.scan_thread.progress.connect(self.on_scan_progress)
         self.scan_thread.finished_scan.connect(self.on_scan_finished)
         self.scan_thread.start()
@@ -251,7 +394,6 @@ class GitSourceCompareDialog(QDialog):
     def on_scan_finished(self, changes):
         """Handle scan completion"""
         self.changes = changes
-        self.checkboxes.clear()
         
         # Populate table
         for change in changes:
@@ -390,12 +532,25 @@ class GitSourceCompareDialog(QDialog):
             return
         
         copied_count = 0
+        backed_up_count = 0
         errors = []
         
         for row in checked_rows:
             change = self.changes[row]
             if change['status'] != "Only in Source":
                 try:
+                    # Backup existing file if backup path is configured
+                    if self.backup_path and os.path.exists(self.backup_path) and os.path.exists(change['source_file']):
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                        backup_folder = os.path.join(self.backup_path, timestamp)
+                        os.makedirs(backup_folder, exist_ok=True)
+                        
+                        backup_file = os.path.join(backup_folder, change['rel_path'])
+                        os.makedirs(os.path.dirname(backup_file), exist_ok=True)
+                        shutil.copy2(change['source_file'], backup_file)
+                        backed_up_count += 1
+                    
                     # Create directory if needed
                     os.makedirs(os.path.dirname(change['source_file']), exist_ok=True)
                     # Copy file
@@ -415,11 +570,10 @@ class GitSourceCompareDialog(QDialog):
                 f"Copied {copied_count} file(s), but {len(errors)} failed:\n\n{error_msg}"
             )
         else:
-            QMessageBox.information(
-                self,
-                "Success",
-                f"✅ Successfully copied {copied_count} file(s) to Source!"
-            )
+            msg = f"✅ Successfully copied {copied_count} file(s) to Source!"
+            if backed_up_count > 0:
+                msg += f"\n💾 Backed up {backed_up_count} file(s) to {self.backup_path}"
+            QMessageBox.information(self, "Success", msg)
         
         # Refresh the list
         self.scan_changes()
@@ -430,4 +584,3 @@ class GitSourceCompareDialog(QDialog):
             self.scan_thread.stop()
             self.scan_thread.wait()
         event.accept()
-
