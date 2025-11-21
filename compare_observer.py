@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidg
     QDialog, QSizePolicy, QLabel, QTextEdit, QLineEdit, QGroupBox, QScrollArea, QTableView, QMessageBox, QCheckBox
 )
 from PyQt6.QtCore import QSettings, QThreadPool, QEvent, QObject, QCoreApplication, QAbstractTableModel, Qt, QSize,  QThread, pyqtSignal, QByteArray, QTimer, QModelIndex
-from PyQt6.QtGui import QCursor, QPixmap, QIcon, QAction, QFont
+from PyQt6.QtGui import QCursor, QPixmap, QIcon, QAction, QFont, QColor
 import difflib
 
 from watchdog.observers import Observer
@@ -287,6 +287,8 @@ class GitSourceCompareDialog(QDialog):
         self.file_list.setColumnCount(3)
         self.file_list.setHorizontalHeaderLabels(["File Path", "Status", "Action"])
         self.file_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.file_list.setColumnWidth(1, 150)  # Status column width
+        self.file_list.setColumnWidth(2, 140)  # Action column width - ensure button is visible
         self.file_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.file_list)
         
@@ -348,9 +350,10 @@ class GitSourceCompareDialog(QDialog):
         return f"{base_normalized}/{child_normalized}"
 
     def _is_excluded(self, rel_path):
+        """Check if path should be excluded based on common system files and user-defined exceptions"""
         normalized = self._normalize_path(rel_path)
         
-        # Auto-exclude .git and common system files
+        # Always exclude common system files
         if normalized.startswith('.git/') or normalized == '.git':
             return True
         if normalized.startswith('__pycache__/') or normalized == '__pycache__':
@@ -358,10 +361,11 @@ class GitSourceCompareDialog(QDialog):
         if '.DS_Store' in normalized or 'Thumbs.db' in normalized:
             return True
         
-        # Check user-defined exceptions
+        # Check user-defined exceptions (respect app settings)
         for pattern in self.except_paths:
             if normalized == pattern or normalized.startswith(f"{pattern}/"):
                 return True
+        
         return False
 
     def _matches_without_dir(self, rel_path):
@@ -456,16 +460,27 @@ class GitSourceCompareDialog(QDialog):
         else:
             return False, "Path does not exist"
     
+    def _normalize_file_content(self, file_path):
+        """Normalize file content for comparison - handles line endings, encoding, etc."""
+        try:
+            # Try reading as text first
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            # Normalize line endings to LF
+            content = content.replace('\r\n', '\n').replace('\r', '\n')
+            # Strip trailing whitespace from each line
+            content = '\n'.join(line.rstrip() for line in content.split('\n'))
+            # Remove trailing newlines at end of file
+            content = content.rstrip('\n')
+            return content.encode('utf-8')
+        except Exception:
+            # If text reading fails, read as binary
+            with open(file_path, 'rb') as f:
+                return f.read()
+
+    # Add this method to GitSourceCompareDialog class
     def scan_changes(self):
-        """Scan for differences between Git and Source paths
-        
-        This method compares all files between Git and Source paths while:
-        - Excluding files/folders in except_paths
-        - Handling without_paths for flattened directory structures (files in without_paths 
-          subdirectories in Source are stored at root level in Git)
-        - Comparing file content using MD5 hashes
-        - Handling network share connectivity issues with retry logic
-        """
+        """Scan for differences between Git and Source paths"""
         # Check Git path access with retry logic
         git_accessible, git_error = self._check_path_access(self.git_path, "Git path")
         if not git_accessible:
@@ -500,41 +515,54 @@ class GitSourceCompareDialog(QDialog):
         self.file_list.setRowCount(0)
         self.changes.clear()
         
-        # Compare files (Git -> Source)
-        # Walk git path and find corresponding files in source
-        # Respects except_paths (excludes matching files/dirs) and without_paths (handles flattened structure)
+        # Compare files (Git -> Source) - Respect user-defined filters from app settings
+        processed_files = set()  # Track processed files to avoid duplicates
         try:
             for root, dirs, files in os.walk(self.git_path):
                 try:
                     rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
                     if rel_dir == ".":
                         rel_dir = ""
+                    
+                    # Filter directories based on user settings (respect except_paths)
                     dirs[:] = [
                         d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        if d != '.git' and not self._is_excluded(self._join_rel_paths(rel_dir, d))
                     ]
+                    
                     for file in files:
                         try:
                             git_file = os.path.join(root, file)
                             git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
 
+                            # Skip files that match user-defined exceptions or system files
                             if self._is_excluded(git_rel_path):
                                 continue
+                            
+                            # Check if already processed
+                            if git_rel_path in processed_files:
+                                continue
+                            processed_files.add(git_rel_path)
 
+                            # Resolve source path (respect without_paths for flattening)
                             display_rel_path, source_file = self._resolve_source_path_from_git(git_rel_path)
                             
                             status = ""
                             try:
-                                if not os.path.exists(source_file):
+                                if not os.path.exists(source_file) or not os.path.isfile(source_file):
                                     status = "New in Git"
                                 else:
-                                    # Compare file contents
+                                    # Compare file contents - only show if files are DIFFERENT
                                     try:
-                                        with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
-                                            git_hash = hashlib.md5(f1.read()).hexdigest()
-                                            source_hash = hashlib.md5(f2.read()).hexdigest()
-                                            if git_hash != source_hash:
-                                                status = "Modified"
+                                        # Read as binary for accurate comparison
+                                        with open(git_file, 'rb') as f1:
+                                            git_content = f1.read()
+                                        with open(source_file, 'rb') as f2:
+                                            source_content = f2.read()
+                                        
+                                        # Compare content directly - if identical, skip (don't add to changes)
+                                        if git_content != source_content:
+                                            status = "Modified"
                                     except (OSError, PermissionError, TimeoutError) as e:
                                         status = f"Error reading: {str(e)[:50]}"
                                     except Exception as e:
@@ -542,6 +570,8 @@ class GitSourceCompareDialog(QDialog):
                             except Exception as e:
                                 status = f"Path error: {str(e)[:50]}"
                             
+                            # Only add to changes if there's a status (file is different or missing)
+                            # Identical files (same content) are skipped - they won't appear in the list
                             if status:
                                 self.add_change_to_list(display_rel_path, status, git_file, source_file, git_rel_path)
                         except (OSError, PermissionError, TimeoutError) as e:
@@ -551,7 +581,7 @@ class GitSourceCompareDialog(QDialog):
                             continue
                 except (OSError, PermissionError, TimeoutError) as e:
                     # Network error accessing directory, skip and continue
-                    self.status_label.setText(f"⚠️ Network issue accessing directory: {rel_dir[:30]}...")
+                    self.status_label.setText(f"⚠️ Network issue accessing directory...")
                     QApplication.processEvents()
                     continue
         except (OSError, PermissionError, TimeoutError) as e:
@@ -561,29 +591,45 @@ class GitSourceCompareDialog(QDialog):
             self.status_label.setText(f"❌ Network error: {str(e)[:50]}")
             return
         
-        # Check for files in source but not in git (respecting exclusion rules)
+        # Check for files in source but not in git - Respect user-defined filters from app settings
         try:
             for root, dirs, files in os.walk(self.source_path):
                 try:
                     rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
                     if rel_dir == ".":
                         rel_dir = ""
+                    
+                    # Filter directories based on user settings (respect except_paths and without_paths)
                     dirs[:] = [
                         d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        if d != '.git'
+                        and not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
                     ]
+                    
                     for file in files:
                         try:
                             source_file = os.path.join(root, file)
                             rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
 
+                            # Skip files that match user-defined exceptions or system files
                             if self._is_excluded(rel_path):
                                 continue
                             
+                            # Skip files in without_paths directories (they're flattened)
+                            if self._matches_without_dir(rel_path):
+                                continue
+                            
+                            # Check if already processed
+                            if rel_path in processed_files:
+                                continue
+                            processed_files.add(rel_path)
+                            
+                            # Resolve git path (respect without_paths for flattening)
                             git_rel_path, git_file = self._resolve_git_path_from_source(rel_path)
                             
                             try:
-                                if not os.path.exists(git_file):
+                                if not os.path.exists(git_file) or not os.path.isfile(git_file):
                                     self.add_change_to_list(rel_path, "Only in Source", git_file, source_file, git_rel_path)
                             except (OSError, PermissionError, TimeoutError) as e:
                                 # Network error checking file, skip and continue
@@ -601,41 +647,70 @@ class GitSourceCompareDialog(QDialog):
             self.status_label.setText(f"❌ Network error: {str(e)[:50]}")
             return
         
-        excluded_count = 0
+        # Show final status - show filters if active
         filter_info = []
         if self.except_paths:
             filter_info.append(f"{len(self.except_paths)} except path(s)")
         if self.without_paths:
             filter_info.append(f"{len(self.without_paths)} without path(s)")
         
-        status_text = f"Found {len(self.changes)} difference(s)"
+        status_text = f"✅ Found {len(self.changes)} difference(s)"
         if filter_info:
             status_text += f" (Filters active: {', '.join(filter_info)})"
         self.status_label.setText(status_text)
         self.copy_to_source_btn.setEnabled(len(self.changes) > 0)
     
-    def add_change_to_list(self, rel_path, status, git_file, source_file, git_rel_path):
-        """Add a change to the file list"""
-        row = self.file_list.rowCount()
-        self.file_list.insertRow(row)
-        
-        self.file_list.setItem(row, 0, QTableWidgetItem(rel_path))
-        self.file_list.setItem(row, 1, QTableWidgetItem(status))
-        
-        # Add view button
-        view_btn = QPushButton("👁️ View & Apply")
-        view_btn.setToolTip("Review changes line-by-line and choose which to apply")
-        view_btn.clicked.connect(lambda checked, g=git_file, s=source_file: self.view_diff(g, s))
-        self.file_list.setCellWidget(row, 2, view_btn)
-        
+    def add_change_to_list(self, display_path, status, git_file, source_file, git_rel_path):
+        """Add a detected change to the list widget"""
         self.changes.append({
-            'rel_path': rel_path,
+            'display_path': display_path,
             'status': status,
             'git_file': git_file,
             'source_file': source_file,
             'git_rel_path': git_rel_path
         })
-    
+        
+        row = self.file_list.rowCount()
+        self.file_list.insertRow(row)
+        
+        # File path
+        path_item = QTableWidgetItem(display_path)
+        path_item.setFlags(path_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        path_item.setCheckState(Qt.CheckState.Checked)
+        self.file_list.setItem(row, 0, path_item)
+        
+        # Status
+        status_item = QTableWidgetItem(status)
+        if status == "Modified":
+            status_item.setForeground(QColor(255, 165, 0))  # Orange
+        elif status == "New in Git":
+            status_item.setForeground(QColor(0, 200, 0))  # Green
+        elif status == "Only in Source":
+            status_item.setForeground(QColor(255, 0, 0))  # Red
+        elif "Error" in status:
+            status_item.setForeground(QColor(200, 0, 0))  # Dark red
+        self.file_list.setItem(row, 1, status_item)
+        
+        # Action button (View & Apply) - compact size
+        if status == "Only in Source":
+            btn_text = "👁️ View"
+            btn_tooltip = "View source file (file doesn't exist in git)"
+        else:
+            btn_text = "👁️ View & Apply"
+            btn_tooltip = "View differences and apply changes from git"
+        
+        view_btn = QPushButton(btn_text)
+        view_btn.setToolTip(btn_tooltip)
+        view_btn.setMaximumHeight(28)  # Smaller height
+        view_btn.setStyleSheet("""
+            QPushButton {
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+        """)
+        view_btn.clicked.connect(lambda checked, g=git_file, s=source_file: self.view_diff(g, s))
+        self.file_list.setCellWidget(row, 2, view_btn)
+        
     def view_diff(self, git_file, source_file):
         """View line-by-line diff between git and source with individual chunk control"""
         try:

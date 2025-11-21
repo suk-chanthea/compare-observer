@@ -61,27 +61,15 @@ class ScanThread(QThread):
         return f"{base_normalized}/{child_normalized}"
     
     def _is_excluded(self, rel_path):
-        """Check if path should be excluded"""
+        """Check if path should be excluded - only exclude common system files"""
         normalized = self._normalize_path(rel_path)
         
-        for pattern in self.except_paths:
-            # Exact match
-            if normalized == pattern:
-                return True
-            # Directory match
-            # Directory match (full or partial)
+        # Only exclude common system files, ignore except_paths from settings
+        # This ensures ALL files are scanned, not filtered by user settings
+        common_excludes = ['.git', '__pycache__', '.DS_Store', 'Thumbs.db']
+        
+        for pattern in common_excludes:
             if normalized == pattern or normalized.startswith(pattern + "/"):
-                return True
-
-            # Parent directory match
-            parts = normalized.split("/")
-            if pattern in parts:
-                return True
-            # Basename match
-            if os.path.basename(normalized) == pattern:
-                return True
-            # Extension match
-            if pattern.startswith('.') and normalized.endswith(pattern):
                 return True
         
         return False
@@ -218,22 +206,17 @@ class ScanThread(QThread):
             self.finished_scan.emit(changes)
             return
         
-        # Count files
+        # Small delay to ensure file system is ready after path checks
+        import time
+        time.sleep(0.5)
+        
+        # Count files - don't exclude anything for git to source comparison
         total_files = 0
         try:
             for root, dirs, files in os.walk(self.git_path):
                 try:
-                    rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
-                    if rel_dir == ".":
-                        rel_dir = ""
-                    
-                    # Exclude both EXCEPT patterns and WITHOUT directories
-                    dirs[:] = [
-                        d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
-                    ]
-                    
+                    # Only exclude .git directory itself to avoid scanning git internals
+                    dirs[:] = [d for d in dirs if d != '.git']
                     total_files += len(files)
                 except (OSError, PermissionError, TimeoutError):
                     continue
@@ -245,17 +228,8 @@ class ScanThread(QThread):
         try:
             for root, dirs, files in os.walk(self.source_path):
                 try:
-                    rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
-                    if rel_dir == ".":
-                        rel_dir = ""
-                    
-                    # Exclude both EXCEPT patterns and WITHOUT directories
-                    dirs[:] = [
-                        d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
-                    ]
-                    
+                    # Only exclude .git directory itself to avoid scanning git internals
+                    dirs[:] = [d for d in dirs if d != '.git']
                     total_files += len(files)
                 except (OSError, PermissionError, TimeoutError):
                     continue
@@ -269,22 +243,17 @@ class ScanThread(QThread):
             return
         
         processed = 0
+        processed_files = set()  # Track processed files to avoid duplicates
         
-        # Scan git path
+        # Scan git path - show ALL files (don't ignore without/except settings)
         try:
             for root, dirs, files in os.walk(self.git_path):
                 if not self._running:
                     break
                 
                 try:
-                    rel_dir = self._normalize_path(self._safe_relpath(root, self.git_path))
-                    if rel_dir == ".":
-                        rel_dir = ""
-                    
-                    dirs[:] = [
-                        d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-                    ]
+                    # Only exclude .git directory itself
+                    dirs[:] = [d for d in dirs if d != '.git']
                         
                     for file in files:
                         if not self._running:
@@ -294,31 +263,64 @@ class ScanThread(QThread):
                             git_file = os.path.join(root, file)
                             git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
                             
-                            if self._is_excluded(git_rel_path):
+                            # For "all files" scan, use direct path mapping without flattening
+                            source_file = os.path.join(self.source_path, git_rel_path.replace("/", os.sep))
+                            display_rel_path = git_rel_path
+                            
+                            # Verify file actually exists and is accessible before comparing
+                            try:
+                                found_in_source = os.path.exists(source_file) and os.path.isfile(source_file)
+                            except (OSError, PermissionError):
+                                found_in_source = False
+                            
+                            # Also verify git file is accessible
+                            try:
+                                found_in_git = os.path.exists(git_file) and os.path.isfile(git_file)
+                            except (OSError, PermissionError):
+                                found_in_git = False
+                            
+                            status = ""
+                            
+                            # Track this file to avoid duplicate processing
+                            file_key = git_rel_path
+                            if file_key in processed_files:
+                                processed += 1
+                                continue
+                            processed_files.add(file_key)
+                            
+                            # Only report changes if both files exist and are accessible
+                            if found_in_source and found_in_git:
+                                try:
+                                    # Add small buffer for file system write delays
+                                    time.sleep(0.01)
+                                    
+                                    with open(git_file, 'rb') as f1:
+                                        git_content = f1.read()
+                                    with open(source_file, 'rb') as f2:
+                                        source_content = f2.read()
+                                    
+                                    # Compare content directly - only show if files are DIFFERENT
+                                    # If files are identical (same content), skip them (don't add to changes)
+                                    if git_content != source_content:
+                                        git_hash = hashlib.md5(git_content).hexdigest()
+                                        source_hash = hashlib.md5(source_content).hexdigest()
+                                        status = "Modified"
+                                    # If files are identical, status remains empty and file is skipped
+                                except (OSError, PermissionError, TimeoutError) as e:
+                                    status = f"Error: {str(e)[:40]}"
+                            elif found_in_git and not found_in_source:
+                                # Only mark as "New in Git" if the file truly doesn't exist in source
+                                status = "New in Git"
+                            elif not found_in_git:
+                                # Git file is not accessible - skip this file (don't count it)
                                 processed += 1
                                 continue
                             
-                            # Try to find corresponding file in source with the same relative path
-                            source_file = os.path.join(self.source_path, git_rel_path.replace("/", os.sep))
-                            found_in_source = os.path.exists(source_file)
-                            status = ""
-                            
-                            # Compare if file exists in both
-                            if found_in_source:
-                                try:
-                                    with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
-                                        git_hash = hashlib.md5(f1.read()).hexdigest()
-                                        source_hash = hashlib.md5(f2.read()).hexdigest()
-                                        if git_hash != source_hash:
-                                            status = "Modified"
-                                except (OSError, PermissionError, TimeoutError) as e:
-                                    status = f"Error: {str(e)[:40]}"
-                            else:
-                                status = "New in Git"
-                            
+                            # Only add to changes if there's a status (file is different or missing)
+                            # Identical files (same content) are skipped - they won't appear in the list
                             if status:
                                 changes.append({
-                                    'rel_path': git_rel_path,
+                                    'rel_path': display_rel_path,
                                     'status': status,
                                     'git_file': git_file,
                                     'source_file': source_file,
@@ -337,23 +339,15 @@ class ScanThread(QThread):
         except (OSError, PermissionError, TimeoutError) as e:
             self.progress.emit(0, f"❌ Error: {str(e)}")
         
-        # Scan source path
+        # Scan source path - show ALL files (don't ignore without/except settings)
         try:
             for root, dirs, files in os.walk(self.source_path):
                 if not self._running:
                     break
                 
                 try:
-                    rel_dir = self._normalize_path(self._safe_relpath(root, self.source_path))
-                    if rel_dir == ".":
-                        rel_dir = ""
-                    
-                    # Exclude both EXCEPT patterns and WITHOUT directories
-                    dirs[:] = [
-                        d for d in dirs
-                        if not self._is_excluded(self._join_rel_paths(rel_dir, d))
-                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
-                    ]
+                    # Only exclude .git directory itself
+                    dirs[:] = [d for d in dirs if d != '.git']
                         
                     for file in files:
                         if not self._running:
@@ -361,34 +355,38 @@ class ScanThread(QThread):
                         
                         try:
                             source_file = os.path.join(root, file)
-                            rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
-
-                            # Check exclusions first
-                            if self._is_excluded(rel_path):
+                            source_rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
+                            
+                            # For "all files" scan, use direct path mapping without flattening
+                            git_file = os.path.join(self.git_path, source_rel_path.replace("/", os.sep))
+                            
+                            # Check if already processed
+                            file_key = source_rel_path
+                            if file_key in processed_files:
                                 processed += 1
                                 continue
                             
-                            # Try to find corresponding file in git with the same relative path
-                            git_file = os.path.join(self.git_path, rel_path.replace("/", os.sep))
-                            found_in_git = os.path.exists(git_file)
+                            # Check if there's a matching git file
+                            try:
+                                found_in_git = os.path.exists(git_file) and os.path.isfile(git_file)
+                            except (OSError, PermissionError):
+                                found_in_git = False
                             
-                            # Only report as "Only in Source" if file not found
+                            # Only report as "Only in Source" if file not found in git
                             if not found_in_git:
-                                try:
-                                    changes.append({
-                                        'rel_path': rel_path,
-                                        'status': "Only in Source",
-                                        'git_file': git_file,
-                                        'source_file': source_file,
-                                        'git_rel_path': rel_path
-                                    })
-                                except (OSError, PermissionError, TimeoutError):
-                                    pass
+                                changes.append({
+                                    'rel_path': source_rel_path,
+                                    'status': "Only in Source",
+                                    'git_file': git_file,
+                                    'source_file': source_file,
+                                    'git_rel_path': source_rel_path
+                                })
+                                processed_files.add(file_key)
                             
                             processed += 1
                             if total_files > 0:
                                 progress = int((processed / total_files) * 100)
-                                self.progress.emit(progress, f"Scanning: {rel_path}")
+                                self.progress.emit(progress, f"Scanning: {source_rel_path}")
                         except (OSError, PermissionError, TimeoutError):
                             processed += 1
                             continue
@@ -484,7 +482,9 @@ class GitSourceCompareDialog(QDialog):
         self.file_list.setHorizontalHeaderLabels(["☑️", "File Path", "Status", "Action"])
         self.file_list.setStyleSheet(STYLES['table'])
         self.file_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.file_list.setColumnWidth(0, 40)
+        self.file_list.setColumnWidth(0, 40)  # Checkbox column
+        self.file_list.setColumnWidth(2, 120)  # Status column
+        self.file_list.setColumnWidth(3, 140)  # Action column - ensure button is visible (increased width)
         self.file_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.file_list)
         
@@ -553,10 +553,12 @@ class GitSourceCompareDialog(QDialog):
         
         for change in changes:
             self.add_change_to_list(
-                change['rel_path'],
+                change.get('rel_path', change.get('git_rel_path', '')),
                 change['status'],
                 change['git_file'],
-                change['source_file']
+                change['source_file'],
+                change.get('git_rel_path', ''),
+                change.get('source_rel_path', '')
             )
         
         self.progress_bar.setVisible(False)
@@ -568,7 +570,7 @@ class GitSourceCompareDialog(QDialog):
         self.select_all_btn.setEnabled(len(self.changes) > 0)
         self.deselect_all_btn.setEnabled(len(self.changes) > 0)
     
-    def add_change_to_list(self, rel_path, status, git_file, source_file):
+    def add_change_to_list(self, rel_path, status, git_file, source_file, git_rel_path="", source_rel_path=""):
         row = self.file_list.rowCount()
         self.file_list.insertRow(row)
         
@@ -582,7 +584,25 @@ class GitSourceCompareDialog(QDialog):
         self.file_list.setCellWidget(row, 0, cell_widget)
         self.checkboxes.append(checkbox)
         
-        self.file_list.setItem(row, 1, QTableWidgetItem(rel_path))
+        # Display path with both git and source paths in tooltip
+        if not git_rel_path:
+            git_rel_path = rel_path
+        if not source_rel_path:
+            source_rel_path = rel_path
+        
+        # Show git path as primary display, source path in tooltip if different
+        display_text = git_rel_path if git_rel_path else rel_path
+        path_item = QTableWidgetItem(display_text)
+        
+        # Create tooltip showing both paths
+        tooltip_parts = [f"Git: {git_rel_path}"]
+        if source_rel_path != git_rel_path:
+            tooltip_parts.append(f"Source: {source_rel_path}")
+        tooltip_parts.append(f"\nGit File: {git_file}")
+        tooltip_parts.append(f"Source File: {source_file}")
+        path_item.setToolTip("\n".join(tooltip_parts))
+        
+        self.file_list.setItem(row, 1, path_item)
         
         status_item = QTableWidgetItem(status)
         if status == "Modified":
@@ -593,8 +613,17 @@ class GitSourceCompareDialog(QDialog):
             status_item.setForeground(Qt.GlobalColor.red)
         self.file_list.setItem(row, 2, status_item)
         
-        view_btn = QPushButton("👁️ View & Apply")
+        # Create view button with appropriate text based on status
+        if status == "Only in Source":
+            btn_text = "👁️ View"
+            btn_tooltip = "View source file (file doesn't exist in git)"
+        else:
+            btn_text = "👁️ View & Apply"
+            btn_tooltip = "View differences and apply changes from git"
+        
+        view_btn = QPushButton(btn_text)
         view_btn.setStyleSheet(STYLES['button_secondary'])
+        view_btn.setToolTip(btn_tooltip)
         view_btn.clicked.connect(lambda checked, g=git_file, s=source_file: self.view_diff(g, s))
         self.file_list.setCellWidget(row, 3, view_btn)
     
