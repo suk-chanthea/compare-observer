@@ -227,9 +227,11 @@ class ScanThread(QThread):
                     if rel_dir == ".":
                         rel_dir = ""
                     
+                    # Exclude both EXCEPT patterns and WITHOUT directories
                     dirs[:] = [
                         d for d in dirs
                         if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
                     ]
                     
                     total_files += len(files)
@@ -247,9 +249,11 @@ class ScanThread(QThread):
                     if rel_dir == ".":
                         rel_dir = ""
                     
+                    # Exclude both EXCEPT patterns and WITHOUT directories
                     dirs[:] = [
                         d for d in dirs
                         if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
                     ]
                     
                     total_files += len(files)
@@ -291,11 +295,6 @@ class ScanThread(QThread):
                             git_rel_path = self._normalize_path(self._safe_relpath(git_file, self.git_path))
                             
                             if self._is_excluded(git_rel_path):
-                                processed += 1
-                                continue
-                            
-                            # Skip files in WITHOUT directories - they're not compared
-                            if self._matches_without_dir(git_rel_path):
                                 processed += 1
                                 continue
                             
@@ -364,11 +363,6 @@ class ScanThread(QThread):
 
                             # Check exclusions first
                             if self._is_excluded(rel_path):
-                                processed += 1
-                                continue
-                            
-                            # Skip files in WITHOUT directories - they're not compared
-                            if self._matches_without_dir(rel_path):
                                 processed += 1
                                 continue
                             
