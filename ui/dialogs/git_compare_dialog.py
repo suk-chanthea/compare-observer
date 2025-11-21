@@ -31,10 +31,6 @@ class ScanThread(QThread):
         for exc in common_auto_exclude:
             if exc not in self.except_paths:
                 self.except_paths.append(exc)
-        
-        print(f"ScanThread initialized:")
-        print(f"  WITHOUT paths: {self.without_paths}")
-        print(f"  EXCEPT paths: {self.except_paths}")
     
     def _normalize_path(self, path):
         return path.replace("\\", "/").strip("/")
@@ -396,11 +392,9 @@ class ScanThread(QThread):
                                 found_in_git = True
                                 git_rel_path = rel_path
                                 git_file = git_file_direct
-                                print(f"DEBUG SOURCE->GIT: Found direct - {rel_path}")
                             else:
                                 # Strategy 2: If file is in WITHOUT directory, try flattened lookup
                                 matched_dir = self._matches_without_dir(rel_path)
-                                print(f"DEBUG SOURCE->GIT: {rel_path} | matched_dir={matched_dir}")
                                 
                                 if matched_dir:
                                     # Try flattening by just using the basename
@@ -410,29 +404,35 @@ class ScanThread(QThread):
                                         found_in_git = True
                                         git_rel_path = basename
                                         git_file = git_file_flattened
-                                        print(f"  ✓ Found flattened: {basename}")
                                     else:
-                                        # Still not found - will be marked as "Only in Source"
+                                        # Still not found
                                         git_rel_path = basename
                                         git_file = git_file_flattened
-                                        print(f"  ✗ NOT found flattened: {basename} at {git_file_flattened}")
                                 else:
                                     # Not in WITHOUT dir and direct path doesn't exist
                                     git_rel_path = rel_path
                                     git_file = git_file_direct
-                                    print(f"  - Not in WITHOUT dirs")
                             
                             if not found_in_git:
-                                try:
-                                    changes.append({
-                                        'rel_path': rel_path,
-                                        'status': "Only in Source",
-                                        'git_file': git_file,
-                                        'source_file': source_file,
-                                        'git_rel_path': git_rel_path
-                                    })
-                                except (OSError, PermissionError, TimeoutError):
-                                    pass
+                                # Check if this file is in a WITHOUT directory
+                                # If it is, don't report as "Only in Source" - the file is expected to be flattened in git
+                                matched_without = self._matches_without_dir(rel_path)
+                                
+                                if not matched_without:
+                                    # Only report as "Only in Source" if NOT in a WITHOUT directory
+                                    try:
+                                        changes.append({
+                                            'rel_path': rel_path,
+                                            'status': "Only in Source",
+                                            'git_file': git_file,
+                                            'source_file': source_file,
+                                            'git_rel_path': git_rel_path
+                                        })
+                                        print(f"    → Marked as 'Only in Source'")
+                                    except (OSError, PermissionError, TimeoutError):
+                                        pass
+                                else:
+                                    print(f"    → Skipped (in WITHOUT dir '{matched_without}' - files expected to be flattened)")
                             
                             processed += 1
                             if total_files > 0:
@@ -472,17 +472,6 @@ class GitSourceCompareDialog(QDialog):
         self.without_paths = without_paths or []
         self.except_paths = except_paths or []
         self.scan_thread = None
-        
-        # Debug output
-        print(f"\n{'='*60}")
-        print(f"GitSourceCompareDialog initialized")
-        print(f"{'='*60}")
-        print(f"Git path: {self.git_path}")
-        print(f"Source path: {self.source_path}")
-        print(f"Backup path: {self.backup_path}")
-        print(f"WITHOUT paths ({len(self.without_paths)}): {self.without_paths}")
-        print(f"EXCEPT paths ({len(self.except_paths)}): {self.except_paths}")
-        print(f"{'='*60}\n")
         
         layout = QVBoxLayout(self)
         layout.setSpacing(int(SPACING['md'].replace('px', '')))
