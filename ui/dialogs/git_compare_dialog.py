@@ -105,28 +105,42 @@ class ScanThread(QThread):
         if os.path.exists(source_file):
             return display_rel, source_file
 
-        basename = os.path.basename(normalized)
-        for directory in self.without_paths:
-            candidate_rel = self._normalize_path(os.path.join(directory, basename))
-            candidate_file = os.path.join(self.source_path, candidate_rel.replace("/", os.sep))
-            if os.path.exists(candidate_file):
-                return candidate_rel, candidate_file
-
+        # Only try flattening if without_paths is explicitly set and file not found directly
         if self.without_paths:
+            basename = os.path.basename(normalized)
+            for directory in self.without_paths:
+                candidate_rel = self._normalize_path(os.path.join(directory, basename))
+                candidate_file = os.path.join(self.source_path, candidate_rel.replace("/", os.sep))
+                if os.path.exists(candidate_file):
+                    return candidate_rel, candidate_file
+
+            # If still not found, try first directory as fallback
             candidate_rel = self._normalize_path(os.path.join(self.without_paths[0], basename))
             candidate_file = os.path.join(self.source_path, candidate_rel.replace("/", os.sep))
             return candidate_rel, candidate_file
 
+        # No without_paths: return the direct path (it may not exist yet)
         return display_rel, source_file
     
     def _resolve_git_path_from_source(self, source_rel_path):
         normalized = self._normalize_path(source_rel_path)
-        matched_dir = self._matches_without_dir(normalized)
-        if matched_dir:
-            basename = os.path.basename(normalized)
-            git_rel = basename
+        
+        # First, try direct path mapping
+        git_file = os.path.join(self.git_path, normalized.replace("/", os.sep))
+        if os.path.exists(git_file):
+            return normalized, git_file
+        
+        # Only use flattening logic if without_paths is set and direct path not found
+        if self.without_paths:
+            matched_dir = self._matches_without_dir(normalized)
+            if matched_dir:
+                basename = os.path.basename(normalized)
+                git_rel = basename
+            else:
+                git_rel = normalized
         else:
             git_rel = normalized
+            
         git_file = os.path.join(self.git_path, git_rel.replace("/", os.sep))
         return git_rel, git_file
     
