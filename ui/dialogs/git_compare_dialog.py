@@ -348,9 +348,11 @@ class ScanThread(QThread):
                     if rel_dir == ".":
                         rel_dir = ""
                     
+                    # Exclude both EXCEPT patterns and WITHOUT directories
                     dirs[:] = [
                         d for d in dirs
                         if not self._is_excluded(self._join_rel_paths(rel_dir, d))
+                        and not self._matches_without_dir(self._join_rel_paths(rel_dir, d))
                     ]
                         
                     for file in files:
