@@ -91,11 +91,19 @@ class ScanThread(QThread):
         return False
     
     def _matches_without_dir(self, rel_path):
+        """Find the most specific WITHOUT directory that matches this path"""
         normalized = self._normalize_path(rel_path)
+        best_match = None
+        best_match_len = 0
+        
         for directory in self.without_paths:
             if normalized.startswith(f"{directory}/") or normalized == directory:
-                return directory
-        return None
+                # Use the longest (most specific) match
+                if len(directory) > best_match_len:
+                    best_match = directory
+                    best_match_len = len(directory)
+        
+        return best_match
     
     def _resolve_source_path_from_git(self, git_rel_path):
         normalized = self._normalize_path(git_rel_path)
@@ -301,11 +309,12 @@ class ScanThread(QThread):
                                 status = ""
                             else:
                                 # Strategy 2: Check if this is a flattened file from WITHOUT directory
-                                # Try to find it in any WITHOUT directory
+                                # Try to find it in any WITHOUT directory (only if it was directly under that dir)
                                 source_file = source_file_direct
                                 if self.without_paths:
                                     basename = os.path.basename(git_rel_path)
                                     for directory in self.without_paths:
+                                        # Only look in direct children of WITHOUT dirs
                                         candidate_path = self._normalize_path(os.path.join(directory, basename))
                                         candidate_file = os.path.join(self.source_path, candidate_path.replace("/", os.sep))
                                         if os.path.exists(candidate_file):
@@ -391,16 +400,27 @@ class ScanThread(QThread):
                                 # Strategy 2: If file is in WITHOUT directory, try flattened lookup
                                 matched_dir = self._matches_without_dir(rel_path)
                                 if matched_dir:
-                                    basename = os.path.basename(rel_path)
-                                    git_file_flattened = os.path.join(self.git_path, basename)
-                                    if os.path.exists(git_file_flattened):
-                                        found_in_git = True
-                                        git_rel_path = basename
-                                        git_file = git_file_flattened
+                                    # Only flatten if file is DIRECTLY in the matched WITHOUT dir
+                                    # e.g., if matched_dir is "config/include/lang", file should be at that level
+                                    parts_without = matched_dir.split("/")
+                                    parts_file = rel_path.split("/")
+                                    
+                                    # File is directly in the matched dir if it has exactly one more part
+                                    if len(parts_file) == len(parts_without) + 1:
+                                        basename = os.path.basename(rel_path)
+                                        git_file_flattened = os.path.join(self.git_path, basename)
+                                        if os.path.exists(git_file_flattened):
+                                            found_in_git = True
+                                            git_rel_path = basename
+                                            git_file = git_file_flattened
+                                        else:
+                                            # Still not found - will be marked as "Only in Source"
+                                            git_rel_path = basename
+                                            git_file = git_file_flattened
                                     else:
-                                        # Still not found - will be marked as "Only in Source"
-                                        git_rel_path = basename
-                                        git_file = git_file_flattened
+                                        # File is in subdirectory of WITHOUT dir - keep full path
+                                        git_rel_path = rel_path
+                                        git_file = git_file_direct
                                 else:
                                     # Not in WITHOUT dir and direct path doesn't exist
                                     git_rel_path = rel_path
