@@ -362,12 +362,16 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
+                            # Skip files that are in WITHOUT directories - they're expected to be handled specially
+                            if self._matches_without_dir(rel_path):
+                                processed += 1
+                                continue
+                            
                             # Try to find corresponding file in git with the same relative path
                             git_file = os.path.join(self.git_path, rel_path.replace("/", os.sep))
                             found_in_git = os.path.exists(git_file)
                             
-                            # Only report as "Only in Source" if NOT in a WITHOUT directory
-                            # WITHOUT directories have special handling in the copy logic, not in comparison
+                            # Only report as "Only in Source" if file not found (and NOT in WITHOUT)
                             if not found_in_git:
                                 try:
                                     changes.append({
