@@ -362,8 +362,17 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
+                            # DEBUG: Check WITHOUT matching
+                            matched_without = self._matches_without_dir(rel_path)
+                            if rel_path.startswith("config"):
+                                print(f"DEBUG SOURCE SCAN: {rel_path}")
+                                print(f"  matched_without: {matched_without}")
+                                print(f"  without_paths: {self.without_paths[:5]}")
+                            
                             # Skip files that are in WITHOUT directories - they're expected to be handled specially
                             if self._matches_without_dir(rel_path):
+                                if rel_path.startswith("config"):
+                                    print(f"  → SKIPPED (in WITHOUT)")
                                 processed += 1
                                 continue
                             
