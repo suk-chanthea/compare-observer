@@ -3393,13 +3393,21 @@ class FileWatcherApp(QMainWindow):
             for row in range(table.rowCount()):
                 if table.item(row, 0) and table.item(row, 0).text() == file_name:
                     table.removeRow(row)
-                    # Remove from file_contents tracking (try both path formats)
-                    normalized_source_path = source_path.replace("\\", "/")
-                    if normalized_source_path in table.file_contents:
-                        del table.file_contents[normalized_source_path]
-                    elif source_path in table.file_contents:
-                        del table.file_contents[source_path]
+                    # IMPORTANT: Keep baseline in file_contents as the new content (already updated at line 3317)
+                    # This ensures future changes can be compared against the new baseline
+                    # DON'T remove from file_contents - it's now the baseline for future changes
                     break
+            
+            # Update the file hash to match the new baseline (after copy)
+            # This ensures future changes are detected correctly
+            normalized_source_path = source_path.replace("\\", "/")
+            if table_index < len(self.watcher_threads) and self.watcher_threads[table_index].isRunning():
+                event_handler = self.watcher_threads[table_index].event_handler
+                if event_handler and os.path.exists(source_path):
+                    # Calculate new hash for the file (after copy, this is the new baseline)
+                    new_hash = event_handler.calculate_file_hash(source_path, True)
+                    if DEBUG:
+                        print(f"Updated hash for {normalized_source_path} after copy: {new_hash}")
         if(send):
 
             # Telegram API endpoint for sending messages
