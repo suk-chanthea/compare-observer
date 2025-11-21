@@ -396,35 +396,31 @@ class ScanThread(QThread):
                                 found_in_git = True
                                 git_rel_path = rel_path
                                 git_file = git_file_direct
+                                print(f"DEBUG SOURCE->GIT: Found direct - {rel_path}")
                             else:
                                 # Strategy 2: If file is in WITHOUT directory, try flattened lookup
                                 matched_dir = self._matches_without_dir(rel_path)
+                                print(f"DEBUG SOURCE->GIT: {rel_path} | matched_dir={matched_dir}")
+                                
                                 if matched_dir:
-                                    # Only flatten if file is DIRECTLY in the matched WITHOUT dir
-                                    # e.g., if matched_dir is "config/include/lang", file should be at that level
-                                    parts_without = matched_dir.split("/")
-                                    parts_file = rel_path.split("/")
-                                    
-                                    # File is directly in the matched dir if it has exactly one more part
-                                    if len(parts_file) == len(parts_without) + 1:
-                                        basename = os.path.basename(rel_path)
-                                        git_file_flattened = os.path.join(self.git_path, basename)
-                                        if os.path.exists(git_file_flattened):
-                                            found_in_git = True
-                                            git_rel_path = basename
-                                            git_file = git_file_flattened
-                                        else:
-                                            # Still not found - will be marked as "Only in Source"
-                                            git_rel_path = basename
-                                            git_file = git_file_flattened
+                                    # Try flattening by just using the basename
+                                    basename = os.path.basename(rel_path)
+                                    git_file_flattened = os.path.join(self.git_path, basename)
+                                    if os.path.exists(git_file_flattened):
+                                        found_in_git = True
+                                        git_rel_path = basename
+                                        git_file = git_file_flattened
+                                        print(f"  ✓ Found flattened: {basename}")
                                     else:
-                                        # File is in subdirectory of WITHOUT dir - keep full path
-                                        git_rel_path = rel_path
-                                        git_file = git_file_direct
+                                        # Still not found - will be marked as "Only in Source"
+                                        git_rel_path = basename
+                                        git_file = git_file_flattened
+                                        print(f"  ✗ NOT found flattened: {basename} at {git_file_flattened}")
                                 else:
                                     # Not in WITHOUT dir and direct path doesn't exist
                                     git_rel_path = rel_path
                                     git_file = git_file_direct
+                                    print(f"  - Not in WITHOUT dirs")
                             
                             if not found_in_git:
                                 try:
