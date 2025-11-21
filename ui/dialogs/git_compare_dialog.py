@@ -290,27 +290,47 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
-                            display_rel_path, source_file = self._resolve_source_path_from_git(git_rel_path)
+                            # Try to find corresponding file in source
+                            # First try direct path
+                            source_file = os.path.join(self.source_path, git_rel_path.replace("/", os.sep))
                             
-                            status = ""
-                            try:
-                                if not os.path.exists(source_file):
+                            if not os.path.exists(source_file):
+                                # Try finding in WITHOUT directories if this is a flattened file
+                                found = False
+                                if self.without_paths:
+                                    basename = os.path.basename(git_rel_path)
+                                    for directory in self.without_paths:
+                                        candidate_path = self._normalize_path(os.path.join(directory, basename))
+                                        candidate_file = os.path.join(self.source_path, candidate_path.replace("/", os.sep))
+                                        if os.path.exists(candidate_file):
+                                            source_file = candidate_file
+                                            found = True
+                                            break
+                                
+                                # If still not found, just mark it as new in git
+                                if not found:
                                     status = "New in Git"
                                 else:
-                                    try:
-                                        with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
-                                            git_hash = hashlib.md5(f1.read()).hexdigest()
-                                            source_hash = hashlib.md5(f2.read()).hexdigest()
-                                            if git_hash != source_hash:
-                                                status = "Modified"
-                                    except (OSError, PermissionError, TimeoutError) as e:
-                                        status = f"Error: {str(e)[:40]}"
-                            except Exception as e:
-                                status = f"Error: {str(e)[:40]}"
+                                    status = ""
+                            else:
+                                status = ""
+                            
+                            # Compare if file exists in both
+                            if not status and os.path.exists(source_file):
+                                try:
+                                    with open(git_file, 'rb') as f1, open(source_file, 'rb') as f2:
+                                        git_hash = hashlib.md5(f1.read()).hexdigest()
+                                        source_hash = hashlib.md5(f2.read()).hexdigest()
+                                        if git_hash != source_hash:
+                                            status = "Modified"
+                                except (OSError, PermissionError, TimeoutError) as e:
+                                    status = f"Error: {str(e)[:40]}"
+                            elif not status:
+                                status = "New in Git"
                             
                             if status:
                                 changes.append({
-                                    'rel_path': display_rel_path,
+                                    'rel_path': git_rel_path,
                                     'status': status,
                                     'git_file': git_file,
                                     'source_file': source_file,
@@ -353,14 +373,22 @@ class ScanThread(QThread):
                             source_file = os.path.join(root, file)
                             rel_path = self._normalize_path(self._safe_relpath(source_file, self.source_path))
 
-                            # Normalize path like git → source mapping
-                            git_rel_path, _ = self._resolve_git_path_from_source(rel_path)
-
-                            # Use git-style relative path for exclusion check
-                            if self._is_excluded(git_rel_path) or self._is_excluded(rel_path):
+                            # Check exclusions first
+                            if self._is_excluded(rel_path):
+                                processed += 1
                                 continue
                             
-                            git_rel_path, git_file = self._resolve_git_path_from_source(rel_path)
+                            # Determine git path based on WITHOUT mapping
+                            matched_dir = self._matches_without_dir(rel_path)
+                            if matched_dir:
+                                # File is in a WITHOUT directory - look for it flattened in git root
+                                basename = os.path.basename(rel_path)
+                                git_rel_path = basename
+                            else:
+                                # File is not in WITHOUT directory - look for it at same path in git
+                                git_rel_path = rel_path
+                            
+                            git_file = os.path.join(self.git_path, git_rel_path.replace("/", os.sep))
                             
                             try:
                                 if not os.path.exists(git_file):
