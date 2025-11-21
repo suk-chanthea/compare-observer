@@ -1455,7 +1455,15 @@ class FileWatcherTable(QTableWidget):
         file_path = os.path.join(self.folder_to_watch, file_name).replace("\\", "/")
         
         # Get old content from cache (baseline from when Start was clicked)
+        # Try normalized path first, then try original path format if not found
         old_content = self.file_contents.get(file_path)
+        if old_content is None:
+            # Try with backslashes (Windows format) in case baseline was stored differently
+            file_path_backslash = file_path.replace("/", "\\")
+            old_content = self.file_contents.get(file_path_backslash)
+            if old_content is not None:
+                # Found with backslashes - copy to normalized format for consistency
+                self.file_contents[file_path] = old_content
         
         if DEBUG:
             print(f"on_file_clicked: {file_path}")
@@ -1501,6 +1509,9 @@ class FileWatcherTable(QTableWidget):
 
         file_name = os.path.relpath(file_path, self.folder_to_watch)
         
+        # Normalize path to forward slashes to match preload storage format
+        normalized_path = file_path.replace("\\", "/")
+        
         # Check if file is already in table
         file_exists = False
         for row in range(self.rowCount()):
@@ -1508,10 +1519,23 @@ class FileWatcherTable(QTableWidget):
                 file_exists = True
                 break
         
-        # If file doesn't exist in table yet, add it (captures current content as baseline)
+        # If file doesn't exist in table yet, add it
+        # IMPORTANT: Baseline content should already exist from preload_file_hashes
+        # If it doesn't exist, it means file was created after preload
         if not file_exists:
+            # Check if baseline content exists (file was preloaded)
+            # Try both normalized and original path formats
+            baseline_exists = normalized_path in self.file_contents
+            if not baseline_exists:
+                # Try with original path format (backslashes)
+                baseline_exists = file_path in self.file_contents
+                if baseline_exists:
+                    # Found with original format - copy to normalized format for consistency
+                    self.file_contents[normalized_path] = self.file_contents[file_path]
+            
+            # Now add the file to table - baseline will be preserved in add_file
             self.add_file(file_path)
-        # If file already exists, do nothing - keep the original baseline content
+        # If file already exists in table, do nothing - keep the original baseline content
         # The baseline was captured when scanning started in preload_file_hashes
 
     def add_file(self, file_path):
@@ -1527,13 +1551,22 @@ class FileWatcherTable(QTableWidget):
             if self.item(row, 0) and self.item(row, 0).text() == file_name:
                 return
         
-        # Store the current file content for diff comparison
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                self.file_contents[file_path] = f.read()
-        except Exception as e:
-            print(f"Error reading file {file_path}: {e}")
-            self.file_contents[file_path] = None
+        # Normalize path to forward slashes to match preload storage format
+        normalized_path = file_path.replace("\\", "/")
+        
+        # IMPORTANT: Only store current content if baseline doesn't exist from preload
+        # If baseline exists (from preload), preserve it - don't overwrite with current content
+        # This ensures we can show the diff between baseline (from start) and current content
+        if normalized_path not in self.file_contents:
+            # No baseline exists - file was created after preload
+            # Store current content as baseline (but there won't be a diff for first change)
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    self.file_contents[normalized_path] = f.read()
+            except Exception as e:
+                print(f"Error reading file {file_path}: {e}")
+                self.file_contents[normalized_path] = None
+        # If baseline already exists (from preload), don't overwrite it - preserve the baseline
         
         row_position = self.rowCount()
         self.insertRow(row_position)
@@ -3251,8 +3284,17 @@ class FileWatcherApp(QMainWindow):
                 print(f"Error reading file {source_path}: {e}")
                 new_content = None
             
-            # Get old content from table storage
-            old_content = table.file_contents.get(source_path)
+            # Get old content from table storage (baseline from when Start was clicked)
+            # Normalize path to forward slashes to match preload storage format
+            normalized_source_path = source_path.replace("\\", "/")
+            old_content = table.file_contents.get(normalized_source_path)
+            
+            # If not found with normalized path, try original path format
+            if old_content is None:
+                old_content = table.file_contents.get(source_path)
+                # If found with original format, copy to normalized format for consistency
+                if old_content is not None:
+                    table.file_contents[normalized_source_path] = old_content
             
             # Create file change entry
             change = FileChangeEntry(source_path, old_content, new_content, src_root)
@@ -3270,7 +3312,9 @@ class FileWatcherApp(QMainWindow):
             # Update file_contents with new content for selected files
             for change in selected_changes:
                 if change.new_content is not None:
-                    table.file_contents[change.file_path] = change.new_content
+                    # Normalize path to forward slashes to match preload storage format
+                    normalized_path = change.file_path.replace("\\", "/")
+                    table.file_contents[normalized_path] = change.new_content
         else:
             QMessageBox.information(self, "No Changes", "No file changes to copy.")
             return
@@ -3309,6 +3353,7 @@ class FileWatcherApp(QMainWindow):
                 dest_path = os.path.join(dest_root, file_name)
                 
                 # Backup git file before overwriting if it exists and backup is configured
+                # Only backup once per file, before copying
                 if backup_folder and os.path.exists(git_path) and os.path.isfile(git_path):
                     try:
                         backup_git_path = os.path.join(backup_folder, file_name)
@@ -3327,16 +3372,6 @@ class FileWatcherApp(QMainWindow):
                 else:
                     dest_root_path = os.path.join(dest_root, base_name)
                     shutil.copy2(source_path, dest_root_path)
-                    
-                    # Backup git file before overwriting if it exists and backup is configured
-                    if backup_folder and os.path.exists(git_path) and os.path.isfile(git_path):
-                        try:
-                            backup_git_path = os.path.join(backup_folder, file_name)
-                            os.makedirs(os.path.dirname(backup_git_path), exist_ok=True)
-                            shutil.copy2(git_path, backup_git_path)
-                            backed_up_count += 1
-                        except Exception as e:
-                            QMessageBox.warning(self, "Backup Warning", f"Could not backup git file {file_name}: {e}")
                     
                     os.makedirs(os.path.dirname(git_path), exist_ok=True)
                     shutil.copy2(source_path, git_path)
@@ -3358,8 +3393,11 @@ class FileWatcherApp(QMainWindow):
             for row in range(table.rowCount()):
                 if table.item(row, 0) and table.item(row, 0).text() == file_name:
                     table.removeRow(row)
-                    # Remove from file_contents tracking
-                    if source_path in table.file_contents:
+                    # Remove from file_contents tracking (try both path formats)
+                    normalized_source_path = source_path.replace("\\", "/")
+                    if normalized_source_path in table.file_contents:
+                        del table.file_contents[normalized_source_path]
+                    elif source_path in table.file_contents:
                         del table.file_contents[source_path]
                     break
         if(send):
