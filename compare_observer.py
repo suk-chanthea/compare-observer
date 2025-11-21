@@ -2839,12 +2839,27 @@ class FileWatcherApp(QMainWindow):
     
     def open_git_compare_embedded(self, git_path, source_path, sys_num):
         """Open Git to Source comparison dialog from embedded page"""
-        # Get backup path for this system
         sys_key = f"sys{sys_num}"
         backup_path = self.setting.get("backup_path", {}).get(sys_key, "")
-
-        without_list = [item.get("path", "") for item in self.setting.get("sys_path", []) if item.get("sys") == sys_num]
-        except_list = [item.get("path", "") for item in self.setting.get("sys_path2", []) if item.get("sys") == sys_num]
+        
+        # Get filtered paths for this system
+        get_sys_path = self.setting.get("sys_path", [])
+        get_sys_path2 = self.setting.get("sys_path2", [])
+        
+        without_list = [item.get("path", "") for item in get_sys_path if item.get("sys") == sys_num]
+        except_list = [item.get("path", "") for item in get_sys_path2 if item.get("sys") == sys_num]
+        
+        # Remove empty strings
+        without_list = [p for p in without_list if p]
+        except_list = [p for p in except_list if p]
+        
+        # DEBUG OUTPUT
+        print(f"\n{'='*60}")
+        print(f"Git Compare Embedded - System {sys_num}")
+        print(f"{'='*60}")
+        print(f"  WITHOUT paths ({len(without_list)}): {without_list}")
+        print(f"  EXCEPT paths ({len(except_list)}): {except_list}")
+        print(f"{'='*60}\n")
         
         dialog = GitSourceCompareDialog(git_path, source_path, backup_path, without_list, except_list, self)
         dialog.setWindowTitle(f"Git ↔ Source - System {sys_num}")
@@ -2979,11 +2994,43 @@ class FileWatcherApp(QMainWindow):
     def load_setting(self):
         settings = QSettings("KgObservedApp", "KgObservedAppStorage")
         setting = settings.value("setting", "")
-        # print(f"first load setting= {setting}")
+        
+        print(f"\n{'='*60}")
+        print(f"Loading Settings")
+        print(f"{'='*60}")
+        print(f"Raw setting string length: {len(setting) if setting else 0}")
+        
         if not setting:
+            print("No settings found - returning empty dict")
+            print(f"{'='*60}\n")
             return {}
         
-        return json.loads(setting)
+        try:
+            loaded = json.loads(setting)
+            print(f"Settings loaded successfully")
+            print(f"Keys: {list(loaded.keys())}")
+            print(f"sys_path entries: {len(loaded.get('sys_path', []))}")
+            print(f"sys_path2 entries: {len(loaded.get('sys_path2', []))}")
+            
+            # Show samples
+            sys_path = loaded.get('sys_path', [])
+            if sys_path:
+                print(f"\nSample sys_path (WITHOUT):")
+                for item in sys_path[:3]:
+                    print(f"  - sys{item.get('sys')}: {item.get('path')}")
+            
+            sys_path2 = loaded.get('sys_path2', [])
+            if sys_path2:
+                print(f"\nSample sys_path2 (EXCEPT):")
+                for item in sys_path2[:3]:
+                    print(f"  - sys{item.get('sys')}: {item.get('path')}")
+            
+            print(f"{'='*60}\n")
+            return loaded
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            print(f"{'='*60}\n")
+            return {}
     
     def update_destination_path(self, setting):
         """Update the destination path and save it to local storage."""
@@ -3020,18 +3067,51 @@ class FileWatcherApp(QMainWindow):
         source_path = get_source_path.get(dest_key, "")
         git_path = get_git_path.get(dest_key, "")
         backup_path = get_backup_path.get(dest_key, "")
+        
+        # Filter paths for this system
         without_list = [item.get("path", "") for item in get_sys_path if item.get("sys") == sys_num]
         except_list = [item.get("path", "") for item in get_sys_path2 if item.get("sys") == sys_num]
         
+        # Remove empty strings
+        without_list = [p for p in without_list if p]
+        except_list = [p for p in except_list if p]
+        
+        # DEBUG OUTPUT
+        print(f"\n{'='*60}")
+        print(f"Git Compare - System {sys_num}")
+        print(f"{'='*60}")
+        print(f"Source: {source_path}")
+        print(f"Git: {git_path}")
+        print(f"Backup: {backup_path}")
+        print(f"\nRaw sys_path (total): {len(get_sys_path)} items")
+        if get_sys_path:
+            print(f"Sample sys_path items:")
+            for item in get_sys_path[:3]:
+                print(f"  - sys{item.get('sys')}: {item.get('path')}")
+        
+        print(f"\nRaw sys_path2 (total): {len(get_sys_path2)} items")
+        if get_sys_path2:
+            print(f"Sample sys_path2 items:")
+            for item in get_sys_path2[:3]:
+                print(f"  - sys{item.get('sys')}: {item.get('path')}")
+        
+        print(f"\nFiltered for sys{sys_num}:")
+        print(f"  WITHOUT paths ({len(without_list)}): {without_list}")
+        print(f"  EXCEPT paths ({len(except_list)}): {except_list}")
+        print(f"{'='*60}\n")
+        
         if not source_path:
-            QMessageBox.warning(self, "Configuration Error", f"Source path for System {sys_num} is not configured.")
+            QMessageBox.warning(self, "Configuration Error", 
+                            f"Source path for System {sys_num} is not configured.")
             return
         
         if not git_path:
-            QMessageBox.warning(self, "Configuration Error", f"Git path for System {sys_num} is not configured.")
+            QMessageBox.warning(self, "Configuration Error", 
+                            f"Git path for System {sys_num} is not configured.")
             return
         
-        dialog = GitSourceCompareDialog(git_path, source_path, backup_path, without_list, except_list, self)
+        dialog = GitSourceCompareDialog(git_path, source_path, backup_path, 
+                                    without_list, except_list, self)
         dialog.exec()
 
     def copy_files_from_table(self, table_index, send = False):
