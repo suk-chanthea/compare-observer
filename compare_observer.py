@@ -231,8 +231,8 @@ class FileChangeEntry:
         elif self.new_content is None:
             return [f"- {line}" for line in self.old_content.splitlines()]
         else:
-            old_lines = self.old_content.splitlines(keepends=True)
-            new_lines = self.new_content.splitlines(keepends=True)
+            old_lines = self.old_content.splitlines()
+            new_lines = self.new_content.splitlines()
             diff = difflib.unified_diff(old_lines, new_lines, lineterm='')
             return list(diff)[2:]  # Skip the file header lines
 
@@ -3224,6 +3224,7 @@ class FileWatcherApp(QMainWindow):
         get_source_path = self.setting.get("source_path", {})
         get_dest_path   = self.setting.get("dest_path", {})
         get_git_path    = self.setting.get("git_path", {})
+        get_backup_path = self.setting.get("backup_path", {})
         get_sys_path    = self.setting.get("sys_path", {})
         telegram_token      = self.setting.get("telegram_token", "")
         telegram_chat_id    = self.setting.get("telegram_chat_id", "")
@@ -3231,6 +3232,7 @@ class FileWatcherApp(QMainWindow):
         src_root        = get_source_path.get(dest_key, "")
         dest_root       = get_dest_path.get(dest_key, "")
         git_root        = get_git_path.get(dest_key, "")
+        backup_root     = get_backup_path.get(dest_key, "")
         sys_path        = [item for item in get_sys_path if item["sys"] == sys_num]
 
         # Collect file changes for diff view
@@ -3273,7 +3275,20 @@ class FileWatcherApp(QMainWindow):
             QMessageBox.information(self, "No Changes", "No file changes to copy.")
             return
 
+        # Create backup folder with timestamp if backup_path is configured
+        backup_folder = None
+        if backup_root and os.path.exists(backup_root):
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            backup_folder = os.path.join(backup_root, timestamp)
+            try:
+                os.makedirs(backup_folder, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "Backup Error", f"Could not create backup folder: {e}")
+                backup_folder = None
+        
         file_name_concat = ""
+        backed_up_count = 0
         
         # Copy only selected files
         for change in selected_changes:
@@ -3289,9 +3304,19 @@ class FileWatcherApp(QMainWindow):
                     keep_relative = False
                     break
             
-            if src_root != '' and dest_root != '' and git_root != '':
+            if src_root != '' and dest_root != '' and git_root != '': 
                 git_path = os.path.join(git_root, file_name)
                 dest_path = os.path.join(dest_root, file_name)
+                
+                # Backup git file before overwriting if it exists and backup is configured
+                if backup_folder and os.path.exists(git_path) and os.path.isfile(git_path):
+                    try:
+                        backup_git_path = os.path.join(backup_folder, file_name)
+                        os.makedirs(os.path.dirname(backup_git_path), exist_ok=True)
+                        shutil.copy2(git_path, backup_git_path)
+                        backed_up_count += 1
+                    except Exception as e:
+                        QMessageBox.warning(self, "Backup Warning", f"Could not backup git file {file_name}: {e}")
                 
                 if keep_relative:
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -3302,6 +3327,17 @@ class FileWatcherApp(QMainWindow):
                 else:
                     dest_root_path = os.path.join(dest_root, base_name)
                     shutil.copy2(source_path, dest_root_path)
+                    
+                    # Backup git file before overwriting if it exists and backup is configured
+                    if backup_folder and os.path.exists(git_path) and os.path.isfile(git_path):
+                        try:
+                            backup_git_path = os.path.join(backup_folder, file_name)
+                            os.makedirs(os.path.dirname(backup_git_path), exist_ok=True)
+                            shutil.copy2(git_path, backup_git_path)
+                            backed_up_count += 1
+                        except Exception as e:
+                            QMessageBox.warning(self, "Backup Warning", f"Could not backup git file {file_name}: {e}")
+                    
                     os.makedirs(os.path.dirname(git_path), exist_ok=True)
                     shutil.copy2(source_path, git_path)
                     file_name_concat += "\n" + base_name
@@ -3357,6 +3393,13 @@ class FileWatcherApp(QMainWindow):
             else:
                 print(f"Failed to send message. Status code: {response.status_code}")
                 print(f"Response: {response.text}")
+        
+        # Show success message with backup info if files were backed up
+        if backed_up_count > 0 and backup_folder:
+            QMessageBox.information(
+                self, "Backup Complete",
+                f"✅ {backed_up_count} file(s) backed up to:\n{backup_folder}"
+            )
 
         print(f"file_name_concat {file_name_concat}")
 
