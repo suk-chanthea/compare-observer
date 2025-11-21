@@ -294,18 +294,14 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
-                            # DEBUG: Check git path files
-                            if git_rel_path.startswith("config"):
-                                print(f"DEBUG GIT SCAN: {git_rel_path}")
+                            # Skip files in WITHOUT directories - they're not compared
+                            if self._matches_without_dir(git_rel_path):
+                                processed += 1
+                                continue
                             
                             # Try to find corresponding file in source with the same relative path
                             source_file = os.path.join(self.source_path, git_rel_path.replace("/", os.sep))
                             found_in_source = os.path.exists(source_file)
-                            
-                            if git_rel_path.startswith("config"):
-                                print(f"  Source path: {source_file}")
-                                print(f"  Found: {found_in_source}")
-                            
                             status = ""
                             
                             # Compare if file exists in both
@@ -320,8 +316,6 @@ class ScanThread(QThread):
                                     status = f"Error: {str(e)[:40]}"
                             else:
                                 status = "New in Git"
-                                if git_rel_path.startswith("config"):
-                                    print(f"  → Marked as 'New in Git'")
                             
                             if status:
                                 changes.append({
@@ -373,17 +367,8 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
-                            # DEBUG: Check WITHOUT matching
-                            matched_without = self._matches_without_dir(rel_path)
-                            if rel_path.startswith("config"):
-                                print(f"DEBUG SOURCE SCAN: {rel_path}")
-                                print(f"  matched_without: {matched_without}")
-                                print(f"  without_paths: {self.without_paths[:5]}")
-                            
-                            # Skip files that are in WITHOUT directories - they're expected to be handled specially
+                            # Skip files in WITHOUT directories - they're not compared
                             if self._matches_without_dir(rel_path):
-                                if rel_path.startswith("config"):
-                                    print(f"  → SKIPPED (in WITHOUT)")
                                 processed += 1
                                 continue
                             
@@ -391,7 +376,7 @@ class ScanThread(QThread):
                             git_file = os.path.join(self.git_path, rel_path.replace("/", os.sep))
                             found_in_git = os.path.exists(git_file)
                             
-                            # Only report as "Only in Source" if file not found (and NOT in WITHOUT)
+                            # Only report as "Only in Source" if file not found
                             if not found_in_git:
                                 try:
                                     changes.append({
