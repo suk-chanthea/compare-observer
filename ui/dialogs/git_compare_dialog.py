@@ -294,9 +294,18 @@ class ScanThread(QThread):
                                 processed += 1
                                 continue
                             
+                            # DEBUG: Check git path files
+                            if git_rel_path.startswith("config"):
+                                print(f"DEBUG GIT SCAN: {git_rel_path}")
+                            
                             # Try to find corresponding file in source with the same relative path
                             source_file = os.path.join(self.source_path, git_rel_path.replace("/", os.sep))
                             found_in_source = os.path.exists(source_file)
+                            
+                            if git_rel_path.startswith("config"):
+                                print(f"  Source path: {source_file}")
+                                print(f"  Found: {found_in_source}")
+                            
                             status = ""
                             
                             # Compare if file exists in both
@@ -311,6 +320,8 @@ class ScanThread(QThread):
                                     status = f"Error: {str(e)[:40]}"
                             else:
                                 status = "New in Git"
+                                if git_rel_path.startswith("config"):
+                                    print(f"  → Marked as 'New in Git'")
                             
                             if status:
                                 changes.append({
