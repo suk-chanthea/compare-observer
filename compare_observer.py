@@ -290,6 +290,7 @@ class GitSourceCompareDialog(QDialog):
         self.file_list.setColumnWidth(1, 150)  # Status column width
         self.file_list.setColumnWidth(2, 140)  # Action column width - ensure button is visible
         self.file_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.file_list.verticalHeader().setDefaultSectionSize(36)  # Larger row height
         layout.addWidget(self.file_list)
         
         # Status label
@@ -691,7 +692,7 @@ class GitSourceCompareDialog(QDialog):
             status_item.setForeground(QColor(200, 0, 0))  # Dark red
         self.file_list.setItem(row, 1, status_item)
         
-        # Action button (View & Apply) - compact size
+        # Action button (View & Apply) - compact size, smaller than row height
         if status == "Only in Source":
             btn_text = "👁️ View"
             btn_tooltip = "View source file (file doesn't exist in git)"
@@ -701,11 +702,12 @@ class GitSourceCompareDialog(QDialog):
         
         view_btn = QPushButton(btn_text)
         view_btn.setToolTip(btn_tooltip)
-        view_btn.setMaximumHeight(28)  # Smaller height
+        view_btn.setFixedHeight(24)  # Fixed small height, smaller than row
         view_btn.setStyleSheet("""
             QPushButton {
-                padding: 3px 8px;
+                padding: 0px 6px;
                 font-size: 11px;
+                border-radius: 3px;
             }
         """)
         view_btn.clicked.connect(lambda checked, g=git_file, s=source_file: self.view_diff(g, s))
