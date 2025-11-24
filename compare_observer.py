@@ -2222,6 +2222,7 @@ class SettingsDialog(QDialog):
             "git_path": git_path,
             "dest_path": dest_path,
             "source_path": source_path,
+            "backup_path": backup_path,
             "sys_path" : path_setting_data,
             "sys_path2" : path_setting_data2,
             "telegram_token": telegram_token,
@@ -3168,7 +3169,9 @@ class FileWatcherApp(QMainWindow):
     
     def update_destination_path(self, setting):
         """Update the destination path and save it to local storage."""
-        self.save_destination_path(setting)  # Save the new path
+        # Merge the passed setting with self.setting to preserve all values
+        self.setting.update(setting)
+        self.save_destination_path(self.setting)  # Save the complete settings
         #QMessageBox.information(self, "Settings Updated", f"Destination path updated to:\n{self.destination_path}")
     def save_destination_path(self, setting):
         settings = QSettings("KgObservedApp", "KgObservedAppStorage")
