@@ -2295,10 +2295,15 @@ class SettingsDialog(QDialog):
             "telegram_chat_id": telegram_chat_id,
             "num_systems": self.num_systems,
         })
-        self.accept()  # Close the settings panel
         
-        # Auto-restart the application after saving settings
-        QTimer.singleShot(100, self.parent().restart_app)
+        # Show success message
+        QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully!")
+        
+        # Close the dialog first
+        self.accept()
+        
+        # Note: Restart is now handled in open_settings() based on num_systems change
+        # No automatic restart on every save
 #================
 class FileWatcherApp(QMainWindow):
     def __init__(self):
