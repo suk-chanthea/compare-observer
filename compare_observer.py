@@ -844,13 +844,21 @@ class GitSourceCompareDialog(QDialog):
             QMessageBox.information(self, "No Selection", "Please select files to copy")
             return
         
-        # Create backup folder with date-time if backup path is configured
+        # Create backup folder with date and time folders if backup path is configured
+        # Structure: backup_path/YYYY-MM-DD/HH-MM-SS/
         backup_folder = None
         if self.backup_path and os.path.exists(self.backup_path):
             from datetime import datetime
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            backup_folder = os.path.join(self.backup_path, timestamp)
+            now = datetime.now()
+            date_folder = now.strftime("%Y-%m-%d")  # e.g., 2025-11-25
+            time_folder = now.strftime("%H-%M-%S")   # e.g., 11-43-32
+            
+            # Create date folder path
+            date_path = os.path.join(self.backup_path, date_folder)
+            # Create time folder path inside date folder
+            backup_folder = os.path.join(date_path, time_folder)
             try:
+                # Create both date and time folders
                 os.makedirs(backup_folder, exist_ok=True)
             except Exception as e:
                 QMessageBox.warning(self, "Backup Error", f"Could not create backup folder: {e}")
@@ -862,16 +870,16 @@ class GitSourceCompareDialog(QDialog):
             change = self.changes[row]
             if change['status'] != "Only in Source":
                 try:
-                    # Backup existing file if it exists and backup is configured
-                    if backup_folder and os.path.exists(change['source_file']):
+                    # Backup git file before copying (before git update) if backup is configured
+                    if backup_folder and os.path.exists(change['git_file']) and os.path.isfile(change['git_file']):
                         backup_file = os.path.join(backup_folder, change['rel_path'])
                         os.makedirs(os.path.dirname(backup_file), exist_ok=True)
-                        shutil.copy2(change['source_file'], backup_file)
+                        shutil.copy2(change['git_file'], backup_file)
                         backed_up_count += 1
                     
                     # Create directory if needed
                     os.makedirs(os.path.dirname(change['source_file']), exist_ok=True)
-                    # Copy file
+                    # Copy file from git to source
                     shutil.copy2(change['git_file'], change['source_file'])
                     copied_count += 1
                 except Exception as e:
@@ -3394,13 +3402,22 @@ class FileWatcherApp(QMainWindow):
             QMessageBox.information(self, "No Changes", "No file changes to copy.")
             return
 
-        # Create backup folder with timestamp if backup_path is configured
+        # Create backup folder with date and time folders if backup_path is configured
+        # Structure: backup_path/YYYY-MM-DD/HH-MM-SS/
+        # Only create backup for Copy_Send button (send=True), not for Copy button
         backup_folder = None
-        if backup_root and os.path.exists(backup_root):
+        if send and backup_root and os.path.exists(backup_root):
             from datetime import datetime
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            backup_folder = os.path.join(backup_root, timestamp)
+            now = datetime.now()
+            date_folder = now.strftime("%Y-%m-%d")  # e.g., 2025-11-25
+            time_folder = now.strftime("%H-%M-%S")   # e.g., 11-43-32
+            
+            # Create date folder path
+            date_path = os.path.join(backup_root, date_folder)
+            # Create time folder path inside date folder
+            backup_folder = os.path.join(date_path, time_folder)
             try:
+                # Create both date and time folders
                 os.makedirs(backup_folder, exist_ok=True)
             except Exception as e:
                 QMessageBox.warning(self, "Backup Error", f"Could not create backup folder: {e}")
