@@ -683,6 +683,26 @@ class GitSourceCompareDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
+        # Create backup folder with date and time folders if backup path is configured
+        # Structure: backup_path/YYYY-MM-DD/HH-MM-SS/
+        backup_folder = None
+        if self.backup_path and os.path.exists(self.backup_path):
+            from datetime import datetime
+            now = datetime.now()
+            date_folder = now.strftime("%Y-%m-%d")  # e.g., 2025-11-25
+            time_folder = now.strftime("%H-%M-%S")   # e.g., 11-43-32
+            
+            # Create date folder path
+            date_path = os.path.join(self.backup_path, date_folder)
+            # Create time folder path inside date folder
+            backup_folder = os.path.join(date_path, time_folder)
+            try:
+                # Create both date and time folders
+                os.makedirs(backup_folder, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "Backup Error", f"Could not create backup folder: {e}")
+                backup_folder = None
+        
         copied_count = 0
         backed_up_count = 0
         errors = []
@@ -691,15 +711,11 @@ class GitSourceCompareDialog(QDialog):
             change = self.changes[row]
             if change['status'] != "Only in Source":
                 try:
-                    if self.backup_path and os.path.exists(self.backup_path) and os.path.exists(change['source_file']):
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                        backup_folder = os.path.join(self.backup_path, timestamp)
-                        os.makedirs(backup_folder, exist_ok=True)
-                        
+                    # Backup git file before copying (before git update) if backup is configured
+                    if backup_folder and os.path.exists(change['git_file']) and os.path.isfile(change['git_file']):
                         backup_file = os.path.join(backup_folder, change['rel_path'])
                         os.makedirs(os.path.dirname(backup_file), exist_ok=True)
-                        shutil.copy2(change['source_file'], backup_file)
+                        shutil.copy2(change['git_file'], backup_file)
                         backed_up_count += 1
                     
                     os.makedirs(os.path.dirname(change['source_file']), exist_ok=True)
