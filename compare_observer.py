@@ -10,10 +10,10 @@ import threading
 import subprocess
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidgetItem, QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QHeaderView, 
-    QDialog, QSizePolicy, QLabel, QTextEdit, QLineEdit, QGroupBox, QScrollArea, QTableView, QMessageBox, QCheckBox
+    QDialog, QSizePolicy, QLabel, QTextEdit, QLineEdit, QGroupBox, QScrollArea, QTableView, QMessageBox, QCheckBox, QStackedWidget
 )
-from PyQt6.QtCore import QSettings, QThreadPool, QEvent, QObject, QCoreApplication, QAbstractTableModel, Qt, QSize,  QThread, pyqtSignal, QByteArray, QTimer, QModelIndex
-from PyQt6.QtGui import QCursor, QPixmap, QIcon, QAction, QFont, QColor
+from PyQt6.QtCore import QSettings, QThreadPool, QEvent, QObject, QCoreApplication, QAbstractTableModel, Qt, QSize, QThread, pyqtSignal, QByteArray, QTimer, QModelIndex
+from PyQt6.QtGui import QCursor, QPixmap, QIcon, QAction, QFont, QColor, QPainter, QPen
 import difflib
 
 from watchdog.observers import Observer
@@ -116,6 +116,69 @@ class CustomTextEdit(QTextEdit):
             self.insertPlainText(source.text())  # Insert as plain text, removing formatting
         else:
             super().insertFromMimeData(source)
+
+class CustomCheckBox(QCheckBox):
+    """Custom checkbox that explicitly paints white checkmark on blue background"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QCheckBox {
+                color: #CCCCCC;
+                background-color: transparent;
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #CCCCCC;
+                border-radius: 6px;
+                background-color: #E0E0E0;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #569cd6;
+                background-color: #F0F0F0;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #007ACC;
+                border: 2px solid #007ACC;
+                border-radius: 6px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+            QCheckBox::indicator:checked:hover {
+                background-color: #1C97EA;
+                border-color: #1C97EA;
+            }
+        """)
+    
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.isChecked():
+            # Paint white checkmark on the indicator
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pen = QPen(QColor(255, 255, 255), 2.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            
+            # Calculate indicator position (Qt places it at the left, with spacing)
+            indicator_size = 18
+            spacing = 2  # From stylesheet spacing
+            indicator_x = spacing
+            indicator_y = (self.height() - indicator_size) // 2
+            
+            # Draw checkmark (V shape)
+            check_x1 = indicator_x + 4
+            check_y1 = indicator_y + 9
+            check_x2 = indicator_x + 8
+            check_y2 = indicator_y + 13
+            check_x3 = indicator_x + 14
+            check_y3 = indicator_y + 5
+            
+            painter.drawLine(check_x1, check_y1, check_x2, check_y2)
+            painter.drawLine(check_x2, check_y2, check_x3, check_y3)
 
 class LogTableModel(QAbstractTableModel):
     """ Efficient model for handling large log files in QTableView """
@@ -1069,6 +1132,8 @@ class ChangeReviewDialog(QDialog):
         self.file_list = QTableWidget()
         self.file_list.setColumnCount(3)
         self.file_list.setHorizontalHeaderLabels(["Include", "File Path", "Status"])
+        self.file_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.file_list.setColumnWidth(0, 80)  # Set fixed width for checkbox column
         self.file_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.file_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.file_list.setMaximumHeight(250)  # Set max height to force scrolling for many files
@@ -1079,15 +1144,16 @@ class ChangeReviewDialog(QDialog):
         for idx, change in enumerate(changes):
             self.file_list.insertRow(idx)
             
-            # Checkbox
-            checkbox = QCheckBox()
+            # Checkbox with visible styling and blue checkmark
+            checkbox = CustomCheckBox()
             checkbox.setChecked(change.is_selected)
             checkbox.stateChanged.connect(lambda state, i=idx: self.on_checkbox_changed(i, state))
             cell_widget = QWidget()
+            cell_widget.setStyleSheet("background-color: transparent;")
             cell_layout = QHBoxLayout(cell_widget)
             cell_layout.addWidget(checkbox)
             cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setContentsMargins(5, 0, 5, 0)
             self.file_list.setCellWidget(idx, 0, cell_widget)
             self.checkboxes.append(checkbox)
             
@@ -2276,6 +2342,7 @@ class FileWatcherApp(QMainWindow):
                 background-color: #1E1E1E;
             }
             QWidget {
+                background-color: #1E1E1E;
                 color: #CCCCCC;
                 font-family: 'Segoe UI', system-ui, sans-serif;
                 font-size: 12px;
